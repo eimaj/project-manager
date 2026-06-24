@@ -61,12 +61,12 @@ SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
 
 ### Step 2 — Meeting catch-up (LIVE) — meeting_source slot
 
-- **If `{{meeting_source}}` is `none`:** **skip meeting catch-up entirely.** Print: "meeting_source slot is none — skipping meeting sync; meetings.jsonl will not be updated." Do not attempt any meeting fetch.
+- **If the `meeting_source` slot is `none`:** **skip meeting catch-up entirely.** Print: "meeting_source slot is none — skipping meeting sync; meetings.jsonl will not be updated." Do not attempt any meeting fetch.
 - **Else:** pull recent meetings from **{{meeting_source}}** and archive them under `{{notes_root}}/meetings` (transcripts + an `import-log.jsonl` index). **Run inline in the main session — MCP-backed meeting tools can fail silently inside subagents.**
 
 ### Step 3 — Append new meeting pointers — meeting_source slot
 
-- **If `{{meeting_source}}` is `none`:** skip (no source to map from).
+- **If the `meeting_source` slot is `none`:** skip (no source to map from).
 - **Else:** map the project's meetings (those matching `MEETING_REF`, or falling back to keyword title match against `KEYWORDS` when `MEETING_REF` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`):
 
   ```bash
@@ -79,7 +79,7 @@ SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
 
 ### Step 4 — Regenerate CALENDAR.md — tracker slot
 
-- **If `{{tracker}}` is `none`:** **skip the live due-date pull.** Leave the Synced section as `_(tracker slot is none — no due dates synced)_` and **preserve everything below the `<!-- PM:MANUAL -->` marker verbatim.** Say so in the briefing.
+- **If the `tracker` slot is `none`:** **skip the live due-date pull.** Leave the Synced section as `_(tracker slot is none — no due dates synced)_` and **preserve everything below the `<!-- PM:MANUAL -->` marker verbatim.** Say so in the briefing.
 - **Else:** pull forward-looking due dates for `TRACKER_REF` from **{{tracker}}**, rewrite the **Synced** section above the marker, and **preserve everything below it verbatim** (hand-added dated items). Sort synced entries by date. If `TRACKER_REF` is blank, leave Synced as `_(no tracker project configured — TODO)_` and still preserve Manual.
 
   ```bash
@@ -101,8 +101,8 @@ grep -oE 'PM:SESSION [^ ]+ START' "$ROOT/LAST-SESSION.md" | grep -v " $SID " || 
 
 Then pull open work:
 
-- **Tracker tasks** — **if `{{tracker}}` is `none`:** skip; note "no tracker — tasks tracked manually in CONTEXT/notes". **Else:** list open items for `TRACKER_REF` (and/or `NOTES_REF`) from **{{tracker}}**.
-- **Recent activity** — **if `{{logger}}` is `none`:** skip. **Else:** pull recent **{{logger}}** entries matching `KEYWORDS` / `NOTES_REF` (last few days) for recent decisions/actions.
+- **Tracker tasks** — **if the `tracker` slot is `none`:** skip; note "no tracker — tasks tracked manually in CONTEXT/notes". **Else:** list open items for `TRACKER_REF` (and/or `NOTES_REF`) from **{{tracker}}**.
+- **Recent activity** — **if the `logger` slot is `none`:** skip. **Else:** pull recent **{{logger}}** entries matching `KEYWORDS` / `NOTES_REF` (last few days) for recent decisions/actions.
 
 ### Step 6 — Print the briefing
 
@@ -117,7 +117,7 @@ Print these sections in order (omit a source's section when its slot is `none`, 
 
 ### Step 7 — Log it — logger slot
 
-- **If `{{logger}}` is `none`:** skip.
+- **If the `logger` slot is `none`:** skip.
 - **Else:** record via **{{logger}}**: `pm-start: opened '<name>' — synced N new meetings, regenerated CALENDAR, briefed`.
 
 ### Step 8 — Print the session branding block (paste to apply)

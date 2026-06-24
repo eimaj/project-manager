@@ -46,17 +46,17 @@ KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 
 **Same guard as `/pm-status`.**
 
-- **If `{{logger}}` is `none`:** **skip the logger sweep** and print "logger slot is none — skipping hygiene sweep."
+- **If the `logger` slot is `none`:** **skip the logger sweep** and print "logger slot is none — skipping hygiene sweep."
 - **Else:** invoke the **{{logger}}** sweep/backfill flow — scan the session for unlogged state-changes and auto-write the missing entries. If your logger has no sweep concept, record one summary entry.
 
 ### Step 3 — Summarize the session — logger slot
 
-- **If `{{logger}}` is `none`:** summarize from your own memory of the session (what got done, decisions, anything left open). This summary feeds Steps 4 and 5.
+- **If the `logger` slot is `none`:** summarize from your own memory of the session (what got done, decisions, anything left open). This summary feeds Steps 4 and 5.
 - **Else:** read recent **{{logger}}** entries for this project (`NOTES_REF` / `KEYWORDS`) and produce a short summary: what got done, decisions made, anything left open.
 
 ### Step 4 — Write a tagged note (optional; logger/notes slot)
 
-- **If `{{logger}}` is `none`:** skip — there is no note sink. (The `LAST-SESSION.md` block in Step 5 is the durable record.)
+- **If the `logger` slot is `none`:** skip — there is no note sink. (The `LAST-SESSION.md` block in Step 5 is the durable record.)
 - **Else:** record a one-line note via **{{logger}}**, tagged with `NOTES_REF`, e.g. `pm-end <name>: <one-line summary of the session>`. Add a second one-line note only for a distinct learning or follow-up.
 
 ### Step 5 — Update this session's handoff block in LAST-SESSION.md
@@ -108,7 +108,7 @@ If the commit-message hook rejects the message, fix the message — never bypass
 
 ### Step 7 — Log it — logger slot
 
-- **If `{{logger}}` is `none`:** skip.
+- **If the `logger` slot is `none`:** skip.
 - **Else:** record via **{{logger}}**: `pm-end: wrapped '<name>' — note logged, LAST-SESSION.md updated`.
 
 ### Step 8 — Release the session color (optional)
@@ -123,7 +123,7 @@ Print this only when the project has a `session_color` configured; skip it other
 
 ## Rules
 
-- **The guard runs first when a logger exists** — identical to `/pm-status`. When `{{logger}}` is `none`, skip it and say so.
+- **The guard runs first when a logger exists** — identical to `/pm-status`. When the `logger` slot is `none`, skip it and say so.
 - **LAST-SESSION.md is per-session blocks** — write only *your* session's block via `handoff-write.sh` (it replaces your block, preserves others). Never overwrite the whole file: a concurrent session on the same project may own another block.
 - **No JOURNAL.md** — do not create one.
 - **Every slot has an explicit `none` branch** — never fabricate logger/tracker activity for a disabled slot.

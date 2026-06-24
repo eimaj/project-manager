@@ -45,7 +45,7 @@ KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 
 **This is a standing hygiene guard.** Its purpose is to keep the logger and any task list current regardless of what else happens.
 
-- **If `{{logger}}` is `none`:** **skip the logger sweep** and print "logger slot is none — skipping hygiene sweep." (You may still do the lightweight cache-only briefing in Step 3.)
+- **If the `logger` slot is `none`:** **skip the logger sweep** and print "logger slot is none — skipping hygiene sweep." (You may still do the lightweight cache-only briefing in Step 3.)
 - **Else:** invoke the **{{logger}}** sweep/backfill flow — scan the session for unlogged state-changes and auto-write the missing entries. If your logger has no sweep concept, at minimum record one summary entry of work done this session.
 
 Do not skip the guard (when a logger exists) even if the briefing was requested moments ago.
@@ -67,13 +67,13 @@ If `CALENDAR.md` / `meetings.jsonl` look stale, note that `/pm-start` will refre
 
 ### Step 4 — Log it — logger slot
 
-- **If `{{logger}}` is `none`:** skip.
+- **If the `logger` slot is `none`:** skip.
 - **Else:** record via **{{logger}}**: `pm-status: cache-only briefing for '<name>' (guard ran)`.
 
 ## Rules
 
 - **CACHE-ONLY.** No live meeting fetch, no live tracker queries, no `CALENDAR.md` regeneration. Reads files only.
-- **The guard runs first when a logger exists** — this is the whole point of routing hygiene through `/pm-status`. When `{{logger}}` is `none`, skip it and say so.
+- **The guard runs first when a logger exists** — this is the whole point of routing hygiene through `/pm-status`. When the `logger` slot is `none`, skip it and say so.
 - **Rerunnable.** Safe to call repeatedly in a session.
 - **No commit/push.**
 

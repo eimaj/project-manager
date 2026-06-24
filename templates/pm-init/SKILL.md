@@ -73,7 +73,7 @@ description: One-time scaffolder for a long-running project under the PM framewo
 4. **Seed CONTEXT.md pointers.** The scaffolder writes a skeleton with pointers to any existing `architecture/`, `adr/`, `plans/`, `meetings/`. If the project already has real architecture docs, edit `CONTEXT.md` to add a 3-line summary and direct links — keep it short; it is the stable overview `/pm-start` leads with.
 
 5. **Log it (logger slot).**
-   - **If `{{logger}}` is `none`:** skip — there is no activity logger configured. Say "logger slot is none — skipping init log entry."
+   - **If the `logger` slot is `none`:** skip — there is no activity logger configured. Say "logger slot is none — skipping init log entry."
    - **Else:** record a one-line action via the **{{logger}}** tool, e.g. `pm-init: onboarded '<name>' at <root> — registry upserted`.
 
 6. **Report & open.** Print the file list, then immediately run [`/pm-start`](../pm-start/SKILL.md) against `<root>` to open the project in this session — set the marker, run live sync, print the briefing, and end with the `/rename` + `/color` session-branding block. Init flows straight into a working session; the user does not run `/pm-start` separately.

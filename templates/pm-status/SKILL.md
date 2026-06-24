@@ -1,6 +1,6 @@
 ---
 name: pm-status
-description: Cache-only PM briefing for the active session's project — reads existing project files (CONTEXT.md, CALENDAR.md, meetings.jsonl, LAST-SESSION.md) + tracker notes, with NO live meeting/tracker sync. Always runs the logger hygiene guard first when a logger is configured. Rerunnable anytime. Use for "where do things stand", "/pm-status", or a quick mid-session recap.
+description: Cache-only PM briefing for the active session's project — reads existing project files (CONTEXT.md, CALENDAR.md, meetings.jsonl, LAST-SESSION.md) + cached notes, with NO live meeting/tracker sync. Always runs the logger hygiene guard first when a logger is configured. Rerunnable anytime. Use for "where do things stand", "/pm-status", or a quick mid-session recap.
 ---
 
 # pm-status — Cache-Only Briefing (rerunnable)

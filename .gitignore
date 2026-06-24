@@ -3,9 +3,6 @@
 /config/config.json
 *.local.*
 
-# The per-project skeleton template IS tracked (it is committed scaffolding, not personal state).
-!templates/project/config.json
-
 # Runtime state — created by install.sh / pm-generate in the live framework dir, not in the repo
 sessions/
 registry.jsonl

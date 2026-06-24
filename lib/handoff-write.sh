@@ -73,9 +73,16 @@ fi
 # ---- rebuild: drop this session's existing block, then append the new one -----
 TMP="$(mktemp)"
 awk -v s="$START" -v e="$END" '
-  $0==s   { skip=1 }
+  # Drop only THIS session's block (between its START and END), then re-append below.
+  # Safety against a malformed file: while skipping, ANY other session boundary
+  # marker (a PM:SESSION ... START/END line that is not our own END) also ends the
+  # skip and is itself printed. So a START whose matching END was lost can drop at
+  # most its own block up to the next block boundary — it can never run to EOF and
+  # silently truncate the rest of the file.
+  $0==s { skip=1; next }
   skip && $0==e { skip=0; next }
-  !skip   { print }
+  skip && /<!-- PM:SESSION .* (START|END) -->/ { skip=0; print; next }
+  !skip { print }
 ' "$FILE" > "$TMP"
 printf '\n%s\n## Session %s — %s\n\n%s\n%s\n' "$START" "$SID" "$TS" "$BODY" "$END" >> "$TMP"
 mv "$TMP" "$FILE"

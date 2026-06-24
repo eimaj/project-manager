@@ -69,6 +69,10 @@ identical for everyone, is symlinked — exactly the clog convention.
 | `meetings.jsonl` | `pm-start` appends pointers | `{meeting_id, date, title, path}` pointers into the meeting archive — never transcript copies |
 | `LAST-SESSION.md` | `pm-end` (per-session block via `handoff-write.sh`) | forward handoff; one block per session, never clobbered across sessions |
 
+`scaffold.sh` generates these per-project files **inline** (heredocs + `jq`), not from a
+template directory — the seeds are conditional (team lists, pointer detection, tracker links),
+so a single inline generator is the one source of truth rather than a parallel skeleton set.
+
 ## Handoff write (no lost updates)
 
 `handoff-write.sh` replaces **only the calling session's block** in `LAST-SESSION.md`,

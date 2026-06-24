@@ -63,7 +63,7 @@ and per-project file layout.
 - **Clean EOD capture** — `pm-end` writes a structured handoff without clobbering other sessions' blocks.
 - **Tool-agnostic** — capability slots mean it works with *your* stack, not the author's.
 - **Familiar install** — the same symlink + gitignored-config convention as
-  [`clog`](https://github.com/). *(Caveat: the **generated** `pm-*` skills are rendered as real
+  [`clog`](https://github.com/eimaj/clog). *(Caveat: the **generated** `pm-*` skills are rendered as real
   files with your slot values baked in — not pure symlinks like clog. Only `pm-generate` itself
   is symlinked. Re-running `/pm-generate` re-renders them.)*
 

@@ -1,0 +1,90 @@
+---
+name: pm-init
+description: One-time scaffolder for a long-running project under the PM framework. Asks the init questions, writes the per-project PM files (.pm/config.json, CONTEXT.md, CALENDAR.md, meetings.jsonl), and appends a dedupe-keyed line to the registry. Use when onboarding a new project to /pm-start / /pm-status / /pm-end, or re-running to edit an existing project's config.
+---
+
+# pm-init — Onboard a Project to the PM Framework
+
+> This skill was rendered by `/pm-generate` from a tool-agnostic template. Concrete
+> tool names below were filled in from your capability-slot mapping; the logic itself
+> only ever talks to slots. Re-run `/pm-generate` to re-render after changing tools.
+
+## Trigger
+
+**Use when:** the user wants to set up a project for the PM loop (`/pm-start`, `/pm-status`, `/pm-end`) for the first time, or to update an existing project's config ("re-init", "update the tracker project on X").
+**Do NOT use when:** the project is already initialized and you just want today's briefing → use `/pm-start` (or `/pm-status` for the cache-only view).
+**Inputs expected:** project name + absolute folder root (required); tracker project, meeting-source folder/label, notes tag, team, keywords (all optional).
+**Outputs produced:** `<root>/.pm/config.json`, `<root>/CONTEXT.md`, `<root>/CALENDAR.md`, `<root>/meetings.jsonl`, one deduped line in `{{framework_root}}/registry.jsonl`, and finally an open session via `/pm-start`.
+
+## Related Skills
+
+- [`pm-start`](../pm-start/SKILL.md) — live-sync briefing; run once per session after init
+- [`pm-status`](../pm-status/SKILL.md) — cache-only briefing, rerunnable
+- [`pm-end`](../pm-end/SKILL.md) — EOD capture
+
+---
+
+## Framework facts (shared across all four pm-* skills)
+
+- **Project identity = its folder root path.** No IDs; the folder is self-describing.
+- **Registry:** `{{framework_root}}/registry.jsonl`, append-only, deduped by `root`.
+- **Per-session marker:** `{{framework_root}}/sessions/<session-id>` contains the active project root (`<session-id>` resolved by `{{framework_root}}/lib/session.sh`). Written by `/pm-start`, read by `/pm-status` and `/pm-end`. Concurrent sessions each hold their own.
+- **Scaffolder:** `{{framework_root}}/lib/scaffold.sh` (the bash generator this skill drives).
+- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, notes store root = **{{notes_root}}**. A slot value of `none` means that capability is disabled and the skills degrade gracefully (see each skill's empty-slot branch).
+- **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`, plus any pre-existing `architecture/`, `adr/`, `plans/`, `meetings/`.
+
+## The init questions
+
+1. **Project name** + **folder root** (absolute path) — required.
+2. **Tracker project** (name → resolve to ID via the **{{tracker}}** slot if you can) — optional. *(If the tracker slot is `none`, skip this question.)*
+3. **Meeting-source folder/label** (how this project's meetings are grouped in **{{meeting_source}}**) — optional. *(If the meeting_source slot is `none`, skip this question.)*
+4. **Notes tag/label** for this project's tasks & notes — optional.
+5. **Team members** (context only) — optional.
+6. **Keywords / aliases** (for search + fallback meeting match) — optional.
+7. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
+
+## Steps
+
+1. **Gather answers.** Ask the questions above (or accept them inline). Skip any question whose slot is `none`. Leave any optional answer blank if unknown — record it as a TODO; never invent values.
+
+2. **Run the scaffolder.** Pass answers as flags (non-interactive) so nothing is mis-prompted:
+
+   ```bash
+   {{framework_root}}/lib/scaffold.sh \
+     --name "<name>" \
+     --root "<absolute root>" \
+     --tracker-ref "<tracker project or blank>" \
+     --meeting-ref "<meeting folder/label or blank>" \
+     --notes-ref "<tag or blank>" \
+     --team "<comma,separated or blank>" \
+     --keywords "<comma,separated or blank>" \
+     --session-color "<red|blue|green|yellow|purple|orange|pink|cyan|default or blank>"
+   ```
+
+   The script writes `.pm/config.json` (always), seeds `CONTEXT.md` / `CALENDAR.md` / `meetings.jsonl` **only if missing** (re-init never clobbers content), and upserts the registry by `root`.
+
+3. **Verify.**
+
+   ```bash
+   jq . "<root>/.pm/config.json"
+   ls -la "<root>/.pm/config.json" "<root>/CONTEXT.md" "<root>/CALENDAR.md" "<root>/meetings.jsonl"
+   ```
+
+4. **Seed CONTEXT.md pointers.** The scaffolder writes a skeleton with pointers to any existing `architecture/`, `adr/`, `plans/`, `meetings/`. If the project already has real architecture docs, edit `CONTEXT.md` to add a 3-line summary and direct links — keep it short; it is the stable overview `/pm-start` leads with.
+
+5. **Log it (logger slot).**
+   - **If `{{logger}}` is `none`:** skip — there is no activity logger configured. Say "logger slot is none — skipping init log entry."
+   - **Else:** record a one-line action via the **{{logger}}** tool, e.g. `pm-init: onboarded '<name>' at <root> — registry upserted`.
+
+6. **Report & open.** Print the file list, then immediately run [`/pm-start`](../pm-start/SKILL.md) against `<root>` to open the project in this session — set the marker, run live sync, print the briefing, and end with the `/rename` + `/color` session-branding block. Init flows straight into a working session; the user does not run `/pm-start` separately.
+
+## Rules
+
+- **Re-init is safe.** Re-running edits `config.json` and upserts the registry but never clobbers `CONTEXT.md`, `CALENDAR.md`, or `meetings.jsonl`.
+- **Do not reimplement** tracker/meeting/logger logic here — init only writes config + seed files. Live data comes at `/pm-start`.
+- **Blank optionals stay blank** and become TODOs in `CONTEXT.md`. Never fabricate a tracker ID or a meeting folder.
+- **No commit/push.** Only writes under `<root>` and the registry.
+
+## Signal Keywords
+<!-- Comma-separated terms the skills collector uses to attribute learnings to this skill -->
+pm-init, pm-framework, project-init, onboard-project, scaffold, registry, pm-config, project-manager, init-project

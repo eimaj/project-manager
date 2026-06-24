@@ -1,0 +1,16 @@
+# Generated personal config — never committed (see config/config.example.json for the template)
+# ~/.config/pm/config.json is the live personal config; the repo only ships the *.example.json template.
+/config/config.json
+*.local.*
+
+# The per-project skeleton template IS tracked (it is committed scaffolding, not personal state).
+!templates/project/config.json
+
+# Runtime state — created by install.sh / pm-generate in the live framework dir, not in the repo
+sessions/
+registry.jsonl
+
+# Misc
+test-output/
+*.bak
+.DS_Store

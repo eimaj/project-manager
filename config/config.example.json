@@ -1,0 +1,28 @@
+{
+  "_comment": "pm personal config template. pm-generate renders this to ~/.config/pm/config.json (gitignored). Each capability slot maps an abstract role to a concrete tool the user confirmed, or \"none\" to degrade. Skill logic reads slots, never tool names.",
+  "version": "1.0",
+  "slots": {
+    "meeting_source": {
+      "tool": "{{meeting_source}}",
+      "_options": "MCP/CLI/skill that pulls meeting notes & transcripts at session start, or \"none\""
+    },
+    "tracker": {
+      "tool": "{{tracker}}",
+      "_options": "issue/project tracker for due dates & status, or \"none\""
+    },
+    "logger": {
+      "tool": "{{logger}}",
+      "_options": "activity logger / hygiene-sweep tool, or \"none\""
+    },
+    "notes_store": {
+      "tool": "filesystem",
+      "root": "{{notes_root}}",
+      "_options": "directory root where project files & archives live; defaults to ~/.pm-notes if unset"
+    }
+  },
+  "paths": {
+    "notes_root": "{{notes_root}}",
+    "framework_root": "{{framework_root}}",
+    "meeting_archive": "{{notes_root}}/meetings"
+  }
+}

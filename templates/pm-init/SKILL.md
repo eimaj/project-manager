@@ -5,9 +5,9 @@ description: One-time scaffolder for a long-running project under the PM framewo
 
 # pm-init — Onboard a Project to the PM Framework
 
-> This skill was rendered by `/pm-generate` from a tool-agnostic template. Concrete
-> tool names below were filled in from your capability-slot mapping; the logic itself
-> only ever talks to slots. Re-run `/pm-generate` to re-render after changing tools.
+> Rendered by `/pm-generate` from a tool-agnostic template. Concrete tool names below
+> were filled in from your capability-slot mapping; the logic itself only ever talks to
+> slots. Re-run `/pm-generate` to re-render after changing tools.
 
 ## Trigger
 

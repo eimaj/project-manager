@@ -9,6 +9,8 @@
 #   meeting_ref  — how this project's meetings are identified in the meeting_source
 #                  (e.g. a folder name, a label) — meaning is defined by the user's mapping
 #   tracker_ref  — how this project maps to the tracker (e.g. a project name/ID)
+#   email_ref    — how this project's mail is identified in the email slot
+#                  (e.g. a label, folder, or sender filter) — meaning is defined by the mapping
 #   notes_ref    — optional tag/label the logger or notes_store uses for this project
 # What those refs mean concretely is resolved at runtime from ~/.config/pm/config.json.
 #
@@ -21,6 +23,7 @@
 #   PM_ROOT          | --root           absolute folder path = project identity (required)
 #   PM_TRACKER_REF   | --tracker-ref    tracker project name/ID (optional)
 #   PM_MEETING_REF   | --meeting-ref    meeting_source folder/label for this project (optional)
+#   PM_EMAIL_REF     | --email-ref      email label/folder/sender filter for this project (optional)
 #   PM_NOTES_REF     | --notes-ref      tag/label for this project's tasks & notes (optional)
 #   PM_TEAM          | --team           comma-separated team members (optional)
 #   PM_KEYWORDS      | --keywords       comma-separated keywords/aliases (optional)
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --root)          PM_ROOT="$2"; shift 2 ;;
     --tracker-ref)   PM_TRACKER_REF="$2"; shift 2 ;;
     --meeting-ref)   PM_MEETING_REF="$2"; shift 2 ;;
+    --email-ref)     PM_EMAIL_REF="$2"; shift 2 ;;
     --notes-ref)     PM_NOTES_REF="$2"; shift 2 ;;
     --team)          PM_TEAM="$2"; shift 2 ;;
     --keywords)      PM_KEYWORDS="$2"; shift 2 ;;
@@ -86,6 +90,7 @@ prompt PM_NAME          "Project name:" required
 prompt PM_ROOT          "Project folder root (absolute path):" required
 prompt PM_TRACKER_REF   "Tracker project (name or ID, blank to skip):"
 prompt PM_MEETING_REF   "Meeting source folder/label (blank to skip):"
+prompt PM_EMAIL_REF     "Email label/folder/sender filter (blank to skip):"
 prompt PM_NOTES_REF     "Tag/label for this project's tasks & notes (blank to skip):"
 prompt PM_TEAM          "Team members (comma-separated, blank to skip):"
 prompt PM_KEYWORDS      "Keywords/aliases (comma-separated, blank to skip):"
@@ -95,6 +100,7 @@ prompt PM_SESSION_COLOR "Claude Code session color (red|blue|green|yellow|purple
 PM_ROOT="${PM_ROOT/#\~/$HOME}"
 PM_TRACKER_REF="${PM_TRACKER_REF:-}"
 PM_MEETING_REF="${PM_MEETING_REF:-}"
+PM_EMAIL_REF="${PM_EMAIL_REF:-}"
 PM_NOTES_REF="${PM_NOTES_REF:-}"
 PM_TEAM="${PM_TEAM:-}"
 PM_KEYWORDS="${PM_KEYWORDS:-}"
@@ -131,12 +137,13 @@ jq -n \
   --arg root "$PM_ROOT" \
   --arg tracker "$PM_TRACKER_REF" \
   --arg meeting "$PM_MEETING_REF" \
+  --arg email "$PM_EMAIL_REF" \
   --arg notes "$PM_NOTES_REF" \
   --argjson team "$TEAM_JSON" \
   --argjson keywords "$KEYWORDS_JSON" \
   --arg session_color "$PM_SESSION_COLOR" \
   --arg created "$CREATED_AT" \
-  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, notes_ref:$notes, team:$team, keywords:$keywords, session_color:$session_color, created:$created}' \
+  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, session_color:$session_color, created:$created}' \
   > "$CONFIG_PATH"
 echo "wrote   $CONFIG_PATH"
 
@@ -193,6 +200,11 @@ else
     else
       echo "- Meeting source folder/label: TODO"
     fi
+    if [[ -n "$PM_EMAIL_REF" ]]; then
+      echo "- Email label/folder/filter: ${PM_EMAIL_REF}"
+    else
+      echo "- Email label/folder/filter: TODO"
+    fi
   } > "$CONTEXT_PATH"
   echo "wrote   $CONTEXT_PATH"
 fi
@@ -237,9 +249,10 @@ REG_LINE="$(jq -n \
   --arg root "$PM_ROOT" \
   --arg tracker "$PM_TRACKER_REF" \
   --arg meeting "$PM_MEETING_REF" \
+  --arg email "$PM_EMAIL_REF" \
   --arg notes "$PM_NOTES_REF" \
   --arg created "$CREATED_AT" \
-  -c '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, notes_ref:$notes, created:$created}')"
+  -c '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, created:$created}')"
 
 if jq -e --arg root "$PM_ROOT" 'select(.root==$root)' "$REGISTRY" >/dev/null 2>&1; then
   TMP="$(mktemp)"

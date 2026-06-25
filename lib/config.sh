@@ -14,6 +14,7 @@
 #   PM_MEETING_SOURCE   concrete meeting tool, or "none"
 #   PM_TRACKER          concrete tracker tool, or "none"
 #   PM_LOGGER           concrete logger tool, or "none"
+#   PM_EMAIL            concrete email/inbox tool, or "none"
 #   PM_NOTES_ROOT       absolute notes-store root (default ~/.pm-notes)
 #   PM_MEETING_ARCHIVE  absolute meeting-archive dir (default $PM_NOTES_ROOT/meetings)
 #   PM_FRAMEWORK_ROOT   absolute framework dir (default ~/.claude/pm)
@@ -22,7 +23,7 @@
 #
 # Helpers:
 #   pm_slot_enabled <slot>   return 0 if the slot is filled (not "none"/empty), else 1
-#                            slot in: meeting_source | tracker | logger | notes_store
+#                            slot in: meeting_source | tracker | logger | email | notes_store
 
 pm_load_config() {
   local quiet=false
@@ -50,6 +51,8 @@ pm_load_config() {
   PM_TRACKER=$(jq -r '(.slots.tracker.tool // "none") | if . == "" then "none" else . end' "$config_path")
   export PM_LOGGER
   PM_LOGGER=$(jq -r '(.slots.logger.tool // "none") | if . == "" then "none" else . end' "$config_path")
+  export PM_EMAIL
+  PM_EMAIL=$(jq -r '(.slots.email.tool // "none") | if . == "" then "none" else . end' "$config_path")
 
   # Notes store root — default ~/.pm-notes when blank.
   local notes_root
@@ -87,6 +90,7 @@ pm_slot_enabled() {
     meeting_source) [[ -n "${PM_MEETING_SOURCE:-}" && "$PM_MEETING_SOURCE" != "none" ]] ;;
     tracker)        [[ -n "${PM_TRACKER:-}" && "$PM_TRACKER" != "none" ]] ;;
     logger)         [[ -n "${PM_LOGGER:-}" && "$PM_LOGGER" != "none" ]] ;;
+    email)          [[ -n "${PM_EMAIL:-}" && "$PM_EMAIL" != "none" ]] ;;
     notes_store)    [[ -n "${PM_NOTES_ROOT:-}" ]] ;;
     *) return 1 ;;
   esac

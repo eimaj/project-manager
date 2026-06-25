@@ -25,9 +25,9 @@ description: Cache-only PM briefing for the active session's project — reads e
 ## Framework facts (shared across all four pm-* skills)
 
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root (`<session-id>` via `{{framework_root}}/lib/session.sh`). **This skill reads it** (does not write it).
-- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, notes store root = **{{notes_root}}**.
+- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
-- **Cache-only:** this skill reads existing files. It performs **NO** live meeting or tracker sync — that is `/pm-start`'s job.
+- **Cache-only:** this skill reads existing files. It performs **NO** live meeting, tracker, or email sync — that is `/pm-start`'s job.
 
 ## Steps
 
@@ -72,7 +72,7 @@ If `CALENDAR.md` / `meetings.jsonl` look stale, note that `/pm-start` will refre
 
 ## Rules
 
-- **CACHE-ONLY.** No live meeting fetch, no live tracker queries, no `CALENDAR.md` regeneration. Reads files only.
+- **CACHE-ONLY.** No live meeting fetch, no live tracker queries, no live email/inbox scan, no `CALENDAR.md` regeneration. Reads files only.
 - **The guard runs first when a logger exists** — this is the whole point of routing hygiene through `/pm-status`. When the `logger` slot is `none`, skip it and say so.
 - **Rerunnable.** Safe to call repeatedly in a session.
 - **No commit/push.**

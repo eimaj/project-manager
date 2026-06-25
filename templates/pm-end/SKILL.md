@@ -25,7 +25,7 @@ description: End-of-session capture for the active PM project — runs the logge
 ## Framework facts (shared across all four pm-* skills)
 
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root (`<session-id>` via `{{framework_root}}/lib/session.sh`). **This skill reads it** (does not write it).
-- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, notes store root = **{{notes_root}}**.
+- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
 - **History lives in the logger; the handoff lives in `LAST-SESSION.md`.** There is **no JOURNAL.md** — `LAST-SESSION.md` carries one block per session (it is a forward handoff, not a log).
 

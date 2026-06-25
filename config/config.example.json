@@ -14,6 +14,10 @@
       "tool": "{{logger}}",
       "_options": "activity logger / hygiene-sweep tool, or \"none\""
     },
+    "email": {
+      "tool": "{{email}}",
+      "_options": "MCP/CLI/skill that reads your inbox for action items at session start, or \"none\""
+    },
     "notes_store": {
       "tool": "filesystem",
       "root": "{{notes_root}}",

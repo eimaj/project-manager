@@ -30,7 +30,7 @@ description: One-time scaffolder for a long-running project under the PM framewo
 - **Registry:** `{{framework_root}}/registry.jsonl`, append-only, deduped by `root`.
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` contains the active project root (`<session-id>` resolved by `{{framework_root}}/lib/session.sh`). Written by `/pm-start`, read by `/pm-status` and `/pm-end`. Concurrent sessions each hold their own.
 - **Scaffolder:** `{{framework_root}}/lib/scaffold.sh` (the bash generator this skill drives).
-- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, notes store root = **{{notes_root}}**. A slot value of `none` means that capability is disabled and the skills degrade gracefully (see each skill's empty-slot branch).
+- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**. A slot value of `none` means that capability is disabled and the skills degrade gracefully (see each skill's empty-slot branch).
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`, plus any pre-existing `architecture/`, `adr/`, `plans/`, `meetings/`.
 
 ## The init questions
@@ -38,10 +38,11 @@ description: One-time scaffolder for a long-running project under the PM framewo
 1. **Project name** + **folder root** (absolute path) — required.
 2. **Tracker project** (name → resolve to ID via the **{{tracker}}** slot if you can) — optional. *(If the tracker slot is `none`, skip this question.)*
 3. **Meeting-source folder/label** (how this project's meetings are grouped in **{{meeting_source}}**) — optional. *(If the meeting_source slot is `none`, skip this question.)*
-4. **Notes tag/label** for this project's tasks & notes — optional.
-5. **Team members** (context only) — optional.
-6. **Keywords / aliases** (for search + fallback meeting match) — optional.
-7. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
+4. **Email label/folder/filter** for this project's mail (how this project's mail is identified in **{{email}}** — a label, folder, or sender filter) — optional. *(If the email slot is `none`, skip this question.)*
+5. **Notes tag/label** for this project's tasks & notes — optional.
+6. **Team members** (context only) — optional.
+7. **Keywords / aliases** (for search + fallback meeting/email match) — optional.
+8. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
 
 ## Steps
 
@@ -55,6 +56,7 @@ description: One-time scaffolder for a long-running project under the PM framewo
      --root "<absolute root>" \
      --tracker-ref "<tracker project or blank>" \
      --meeting-ref "<meeting folder/label or blank>" \
+     --email-ref "<email label/folder/filter or blank>" \
      --notes-ref "<tag or blank>" \
      --team "<comma,separated or blank>" \
      --keywords "<comma,separated or blank>" \

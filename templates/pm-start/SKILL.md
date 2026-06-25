@@ -28,7 +28,7 @@ description: Open a PM-framework project for the session — sets the per-sessio
 
 - **Project identity = its folder root path.** Registry: `{{framework_root}}/registry.jsonl` (deduped by `root`).
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root path, where `<session-id>` comes from `{{framework_root}}/lib/session.sh`. **This skill writes it.** Concurrent sessions each hold their own.
-- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, notes store root = **{{notes_root}}**.
+- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
 - **Meetings = pointers, not copies.** The meeting archive lives under `{{notes_root}}/meetings`. The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
 
@@ -51,6 +51,7 @@ Load config into shell vars for later steps:
 ```bash
 MEETING_REF=$(jq -r '.meeting_ref // ""' "$ROOT/.pm/config.json")
 TRACKER_REF=$(jq -r '.tracker_ref // ""' "$ROOT/.pm/config.json")
+EMAIL_REF=$(jq -r '.email_ref // ""' "$ROOT/.pm/config.json")
 NOTES_REF=$(jq -r '.notes_ref // ""' "$ROOT/.pm/config.json")
 KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 NAME=$(jq -r '.name // ""' "$ROOT/.pm/config.json")
@@ -76,6 +77,11 @@ SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
   ```
 
   Never duplicate transcripts — store pointers only. If `MEETING_REF` is blank, note it as a TODO.
+
+### Step 3b — Inbox scan (LIVE) — email slot
+
+- **If the `email` slot is `none`:** **skip the inbox scan** and say so. Print: "the `email` slot is `none` — skip the inbox scan and say so." Do not attempt any mail fetch.
+- **Else:** pull this project's action items / commitments / threads needing a response from **{{email}}**, filtered by `EMAIL_REF` (the project's label/folder/sender filter), falling back to keyword title/subject match against `KEYWORDS` when `EMAIL_REF` is blank. **Run inline in the main session — MCP-backed mail tools can fail silently inside subagents.** Surface the results in the briefing (Step 6); do not write them to a project file. If `EMAIL_REF` is blank, note it as a TODO.
 
 ### Step 4 — Regenerate CALENDAR.md — tracker slot
 
@@ -110,6 +116,7 @@ Print these sections in order (omit a source's section when its slot is `none`, 
 
 - **Status & recent decisions** — from recent logger entries + tracker state
 - **Open tasks / next actions** — tracker items (+ notes)
+- **Inbox needing a response** — action items / commitments / threads from **{{email}}** (omit when the `email` slot is `none`)
 - **Upcoming** — `CALENDAR.md`
 - **Recent meetings** — last few pointers from `meetings.jsonl`
 - **Focus today** — your synthesis (lead from LAST-SESSION next-up)

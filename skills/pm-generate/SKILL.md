@@ -1,6 +1,6 @@
 ---
 name: pm-generate
-description: Interactive generator that stands up a personalized, tool-agnostic PM skill set. Auto-detects the user's MCP servers and CLI tooling, confirms which tool fills each capability slot (meeting_source, tracker, logger, notes_store), renders the pm-init / pm-start / pm-status / pm-end skills directly into ~/.claude/skills/pm-*, writes a gitignored personal config, and installs the framework lib + runtime state. Use when onboarding yourself to the PM framework, "/pm-generate", or "set up my PM skills".
+description: Interactive generator that stands up a personalized, tool-agnostic PM skill set. Auto-detects the user's MCP servers and CLI tooling, confirms which tool fills each capability slot (meeting_source, tracker, logger, email, notes_store), renders the pm-init / pm-start / pm-status / pm-end skills directly into ~/.claude/skills/pm-*, writes a gitignored personal config, and installs the framework lib + runtime state. Use when onboarding yourself to the PM framework, "/pm-generate", or "set up my PM skills".
 ---
 
 # pm-generate — Generate a Personalized PM Skill Set
@@ -21,9 +21,10 @@ The generated skills **never call a tool by name** — they resolve an abstract 
 | `meeting_source` | pull meeting notes/transcripts at session start | a meetings MCP, a transcript CLI | `pm-start` skips meeting sync and says so |
 | `tracker` | issue/project due dates & status | an issue-tracker MCP, a tracker CLI, `gh` issues | `pm-start` skips due-date sync |
 | `logger` | record session actions / hygiene sweep | an activity-logger CLI | `pm-status`/`pm-end` skip the hygiene guard |
+| `email` | pull inbox action items / commitments / threads needing a response at session start | a mail MCP/CLI | `pm-start` skips the inbox scan and says so |
 | `notes_store` | where project files + archives live | a directory path | defaults to `~/.pm-notes` |
 
-`none` is always an allowed answer for `meeting_source`, `tracker`, and `logger`.
+`none` is always an allowed answer for `meeting_source`, `tracker`, `logger`, and `email`.
 
 ## Where things install (read carefully — this differs from a pure-symlink package)
 
@@ -66,20 +67,34 @@ for c in gh; do command -v "$c" >/dev/null 2>&1 && echo "Found CLI: $c ($(comman
 
 Present the raw detected list to the user. Do **not** assume what each server is for — the user assigns it to a slot next.
 
+#### Recognition hint map (suggestion only — the raw list above is still authoritative)
+
+To make Step 2 faster, match each detected MCP server name (case-insensitive substring) against the table below and **propose** the corresponding slot as that server's likely role. This is purely a *suggestion* to pre-fill the Step 2 prompt — the user still confirms or overrides every slot, and `none` is always offered. The raw detected list is always shown alongside; an unrecognized server is not dropped, it just gets no pre-fill. **The mapping lives only here in the generator — generated skills stay tool-agnostic (slots only).**
+
+| Slot to propose | Detected name contains (case-insensitive) |
+|---|---|
+| `tracker` | jira, atlassian, linear, github, asana, shortcut, clickup |
+| `meeting_source` | granola, otter, fireflies, zoom, fathom, gong |
+| `email` | gmail, outlook, microsoft, superhuman, mail |
+| `logger` | clog |
+
+Precedence when a name matches more than one row: prefer the **most specific** match for that tool's primary role (e.g. `microsoft` → `email` via Outlook/365 mail; a name matching both `github` and nothing else → `tracker`). When genuinely ambiguous, present both candidates to the user and let them choose. Do **not** expand detection beyond `claude mcp list` — the `logger` row is matched the same way against detected names, and the `gh` CLI + `command -v` logger probe below stay exactly as-is; no new CLI probes.
+
 ### Step 2 — Propose + confirm a mapping per slot
 
-For each of the four slots, propose a default from what was detected and ask the user to confirm or override. Use an AskUserQuestion-style prompt per slot; **always offer `none`** for `meeting_source`, `tracker`, and `logger`.
+For each slot, propose a default from what was detected (using the Step 1 recognition hint map as the pre-fill) and ask the user to confirm or override. Use an AskUserQuestion-style prompt per slot; **always offer `none`** for `meeting_source`, `tracker`, `logger`, and `email`. The recognition map only *suggests* — the user's answer wins, and any detected server can be assigned to any slot.
 
 - **meeting_source** — "Which of your detected tools pulls meeting notes/transcripts? (or `none`)"
 - **tracker** — "Which tool tracks issues/projects & due dates? (or `none`)"
 - **logger** — "Which tool records session activity / does a hygiene sweep? (or `none`)"
+- **email** — "Which tool reads your inbox for action items? (or `none`)"
 - **notes_store** — "Where should project files & the meeting archive live? (a directory path; default `~/.pm-notes`)"
 
 Then collect paths:
 - **notes_root** — default `~/.pm-notes` (used above).
 - **framework_root** — default `~/.claude/pm` (where lib + state install).
 
-Record the confirmed answers in shell vars: `SLOT_MEETING`, `SLOT_TRACKER`, `SLOT_LOGGER`, `NOTES_ROOT`, `FRAMEWORK_ROOT` (each empty slot recorded literally as `none`).
+Record the confirmed answers in shell vars: `SLOT_MEETING`, `SLOT_TRACKER`, `SLOT_LOGGER`, `SLOT_EMAIL`, `NOTES_ROOT`, `FRAMEWORK_ROOT` (each empty slot recorded literally as `none`).
 
 ### Step 3 — Write the personal config (gitignored)
 
@@ -100,6 +115,7 @@ jq -n \
   --arg meeting "${SLOT_MEETING:-none}" \
   --arg tracker "${SLOT_TRACKER:-none}" \
   --arg logger  "${SLOT_LOGGER:-none}" \
+  --arg email   "${SLOT_EMAIL:-none}" \
   --arg notes   "$NOTES_ROOT" \
   --arg fw      "$FRAMEWORK_ROOT" \
   '{
@@ -108,6 +124,7 @@ jq -n \
        meeting_source: { tool: $meeting },
        tracker:        { tool: $tracker },
        logger:         { tool: $logger },
+       email:          { tool: $email },
        notes_store:    { tool: "filesystem", root: $notes }
      },
      paths: { notes_root: $notes, framework_root: $fw, meeting_archive: ($notes + "/meetings") }
@@ -159,6 +176,7 @@ render_skill() {
     -e "s#{{meeting_source}}#${SLOT_MEETING:-none}#g" \
     -e "s#{{tracker}}#${SLOT_TRACKER:-none}#g" \
     -e "s#{{logger}}#${SLOT_LOGGER:-none}#g" \
+    -e "s#{{email}}#${SLOT_EMAIL:-none}#g" \
     -e "s#{{notes_root}}#${NOTES_ROOT}#g" \
     -e "s#{{framework_root}}#${FRAMEWORK_ROOT}#g" \
     "$src" > "$dst"
@@ -178,7 +196,7 @@ done
 
 Print a clear summary:
 
-- **Slots wired:** meeting_source → `<value or none>`, tracker → `<…>`, logger → `<…>`, notes_store → `<NOTES_ROOT>`.
+- **Slots wired:** meeting_source → `<value or none>`, tracker → `<…>`, logger → `<…>`, email → `<…>`, notes_store → `<NOTES_ROOT>`.
 - **Degraded slots:** list every slot set to `none` and the one-line behavior change (e.g. "meeting_source=none → pm-start skips meeting sync").
 - **Files written:** the four `~/.claude/skills/pm-*/SKILL.md`, `~/.config/pm/config.json`, `$FRAMEWORK_ROOT/lib/*`, `registry.jsonl`, `sessions/`.
 - **Next step:** "Run `/pm-init` in a project folder to onboard your first project."
@@ -186,7 +204,8 @@ Print a clear summary:
 ## Rules
 
 - **Detect, never install.** This skill maps existing tools to slots; it does not install MCP servers or CLIs. Empty slots degrade gracefully.
-- **`none` is always valid** for meeting_source/tracker/logger. Record it literally; the rendered skills branch on it.
+- **`none` is always valid** for meeting_source/tracker/logger/email. Record it literally; the rendered skills branch on it.
+- **Recognition is a suggestion, not a probe.** The Step 1 hint map only pre-fills Step 2 proposals from the names `claude mcp list` returns; it adds no CLI probes and the user confirms every slot. Mapping lives only in this generator — the rendered skills reference slots, never tool names.
 - **Declinable guard is mandatory.** Never overwrite a `~/.claude/skills/pm-*` that is not our own render or is a foreign symlink — stop and ask.
 - **The generated skills are rendered files, not symlinks.** Only `pm-generate` itself is symlinked (by `install.sh`).
 - **Personal config is gitignored** and lives at `~/.config/pm/config.json` — never commit it.

@@ -12,10 +12,26 @@ logger without editing skill logic.
 | `meeting_source` | pull meeting notes/transcripts at session start | a meetings MCP, a transcript CLI, … | `pm-start` skips meeting catch-up + pointer append, and says so |
 | `tracker` | issue/project due dates & status | an issue-tracker MCP/CLI, `gh` issues, … | `pm-start` skips the due-date sync; `CALENDAR.md` Synced section left empty |
 | `logger` | record session actions; hygiene sweep | an activity-logger CLI | `pm-status` / `pm-end` skip the hygiene guard and per-session log entry |
+| `email` | pull inbox action items / commitments / threads needing a response at session start | a mail MCP/CLI | `pm-start` skips the inbox scan and says so |
 | `notes_store` | where project files + the meeting archive live | a filesystem path | defaults to `~/.pm-notes` (always enabled) |
 
-`none` is an allowed value for `meeting_source`, `tracker`, and `logger`. `notes_store`
+`none` is an allowed value for `meeting_source`, `tracker`, `logger`, and `email`. `notes_store`
 always resolves to a path (its default is `~/.pm-notes`).
+
+Like `meeting_source`, the `email` slot is a **live session-start input**: `pm-start`
+scans the inbox inline (filtered by the per-project `email_ref`, falling back to keywords)
+and surfaces what needs a response in the briefing. `pm-status` never live-scans email —
+it is cache-only — and `pm-end` takes no email action.
+
+## Detection is generic
+
+`/pm-generate` detects MCP servers with **`claude mcp list`** and treats every returned
+server as a candidate for any slot. A built-in recognition map only *pre-fills suggestions*
+(e.g. an `atlassian`/`linear`/`github` server → `tracker`; `granola`/`zoom` → `meeting_source`;
+`gmail`/`outlook`/`superhuman` → `email`; `clog` → `logger`) — you still confirm or override
+every slot, and `none` is always offered. Any MCP server works in any slot regardless of the
+map: the suggestion is a convenience, not a constraint, and the raw detected list is always
+shown so unrecognized servers stay assignable.
 
 ## Where the mapping lives
 
@@ -29,6 +45,7 @@ Shape:
     "meeting_source": { "tool": "<your tool or none>" },
     "tracker":        { "tool": "<your tool or none>" },
     "logger":         { "tool": "<your tool or none>" },
+    "email":          { "tool": "<your tool or none>" },
     "notes_store":    { "tool": "filesystem", "root": "/abs/notes/root" }
   },
   "paths": {
@@ -49,7 +66,7 @@ slot to the literal string `none` so every skill can branch on it:
 
 ```bash
 source "$HOME/.claude/pm/lib/config.sh"
-pm_load_config                  # exports PM_MEETING_SOURCE, PM_TRACKER, PM_LOGGER,
+pm_load_config                  # exports PM_MEETING_SOURCE, PM_TRACKER, PM_LOGGER, PM_EMAIL,
                                 # PM_NOTES_ROOT, PM_MEETING_ARCHIVE, PM_FRAMEWORK_ROOT, ...
 
 if pm_slot_enabled tracker; then
@@ -71,6 +88,7 @@ briefing** rather than failing or fabricating data. Concretely:
 - `meeting_source = none` → `pm-start` prints "skipping meeting sync"; `meetings.jsonl` is not updated.
 - `tracker = none` → `pm-start` leaves the `CALENDAR.md` Synced section empty and skips tracker task lists.
 - `logger = none` → `pm-status` / `pm-end` skip the hygiene guard and the per-session log entry.
+- `email = none` → `pm-start` skips the inbox scan and says so; nothing is fetched.
 
 With both `meeting_source` and `tracker` empty, the framework degrades to a per-project
 notes scaffolder — still useful, but you lose the live-sync payoff.

@@ -25,7 +25,7 @@ generated skills coordinate across sessions.
   lib/session.sh              # resolve a stable per-session id
   lib/scaffold.sh             # scaffold a new project's files; upsert the registry
   lib/handoff-write.sh        # atomic per-session LAST-SESSION.md block update
-  lib/config.sh               # read ~/.config/pm/config.json, expose slot values
+  lib/config.sh               # read ~/.config/pm/config.json, expose slot values (incl. email)
   registry.jsonl              # the project list (append-only, deduped by root) — gitignored state
   sessions/<session-id>       # per-session marker → active project root — gitignored state
 
@@ -35,7 +35,7 @@ generated skills coordinate across sessions.
 ### Why generated skills are rendered, not symlinked
 
 `pm-generate` produces **user-specific** output — your slot values (`meeting_source`,
-`tracker`, `logger`, paths) are substituted into the skill text. Symlinking a single shared
+`tracker`, `logger`, `email`, paths) are substituted into the skill text. Symlinking a single shared
 copy would be wrong: two users want different content. So the generated `pm-init/start/
 status/end` are written as **real files directly into `~/.claude/skills/pm-*`**, with a
 declinable guard that refuses to overwrite a skill it did not itself render (it greps for a
@@ -47,9 +47,9 @@ identical for everyone, is symlinked — exactly the clog convention.
 - **Project identity = its folder root path.** No IDs; the folder is self-describing.
 - The **registry** (`~/.claude/pm/registry.jsonl`) is append-only and **deduped by `root`**:
   re-initializing a project updates its line in place rather than adding a duplicate.
-- Each registry line records `{name, root, tracker_ref, meeting_ref, notes_ref, created}`.
-  Those `*_ref` fields are abstract — what `tracker_ref` *means* is resolved against the
-  `tracker` slot at runtime, so the registry stays tool-agnostic.
+- Each registry line records `{name, root, tracker_ref, meeting_ref, email_ref, notes_ref, created}`.
+  Those `*_ref` fields are abstract — what `tracker_ref` or `email_ref` *means* is resolved
+  against the `tracker` / `email` slot at runtime, so the registry stays tool-agnostic.
 
 ## Per-session markers (concurrency)
 
@@ -63,7 +63,7 @@ identical for everyone, is symlinked — exactly the clog convention.
 
 | File | Written by | Purpose |
 |---|---|---|
-| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`name`, `*_ref`, team, keywords, color) |
+| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`name`, `*_ref` incl. `email_ref`, team, keywords, color) |
 | `CONTEXT.md` | `pm-init` (seed; never clobbered) | stable hand-edited overview |
 | `CALENDAR.md` | `pm-init` seed; `pm-start` regenerates Synced section | forward-looking dates; manual entries below the `<!-- PM:MANUAL -->` marker are preserved |
 | `meetings.jsonl` | `pm-start` appends pointers | `{meeting_id, date, title, path}` pointers into the meeting archive — never transcript copies |

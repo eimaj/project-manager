@@ -22,6 +22,7 @@ slot* from your personal config:
 | `meeting_source` | pull meeting notes/transcripts at session start | `pm-start` skips meeting sync and says so |
 | `tracker` | issue/project due dates & status | `pm-start` skips due-date sync |
 | `logger` | record session actions / hygiene sweep | `pm-status` / `pm-end` skip the hygiene guard |
+| `email` | pull inbox action items / threads needing a response at session start | `pm-start` skips the inbox scan and says so |
 | `notes_store` | where project files + archives live | defaults to `~/.pm-notes` |
 
 You map each slot to whatever you actually use (or `none`). Skill logic branches on which
@@ -30,7 +31,9 @@ slots are filled — so the same package works with *your* stack, not the author
 
 ### `/pm-generate` flow
 
-1. **Detect** your MCP servers (`claude mcp list`) and CLI tooling (`command -v`).
+1. **Detect** your MCP servers (`claude mcp list`) and CLI tooling (`command -v`). Detection
+   is **tool-agnostic** — any MCP server can map to any slot; a built-in recognition map only
+   pre-fills suggestions (Jira/Linear → tracker, Gmail/Outlook → email, etc.), never constrains.
 2. **Propose** a default tool per slot from what was detected.
 3. **Confirm / override** each slot with you — `none` is always allowed.
 4. **Render** the templates into working skills with your values baked in.

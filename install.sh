@@ -33,7 +33,7 @@ done
 say()  { echo "  $*"; }
 info() { echo ""; echo "==> $*"; }
 warn() { echo "  [!] $*"; }
-run()  { if [[ "$DRY_RUN" == "true" ]]; then echo "  [dry-run] $*"; else eval "$*"; fi; }
+run()  { if [[ "$DRY_RUN" == "true" ]]; then printf '  [dry-run]'; printf ' %q' "$@"; echo; else "$@"; fi; }
 
 # Resolved targets (overridable for testing).
 SKILLS_DIR="${PM_SKILLS_DIR:-$HOME/.claude/skills}"
@@ -76,7 +76,7 @@ run mkdir -p "${FRAMEWORK_ROOT}/sessions"
 if [[ -f "${FRAMEWORK_ROOT}/registry.jsonl" ]]; then
   say "registry.jsonl already exists — kept as-is."
 else
-  run "touch '${FRAMEWORK_ROOT}/registry.jsonl'"
+  run touch "${FRAMEWORK_ROOT}/registry.jsonl"
   say "created empty registry.jsonl"
 fi
 
@@ -88,7 +88,7 @@ else
   run mkdir -p "$(dirname "$CONFIG_DST")"
   # Copy the template verbatim. /pm-generate substitutes the {{placeholders}} with the
   # user's confirmed slot mapping; until then the config carries placeholders + defaults.
-  run "cp '${SCRIPT_DIR}/config/config.example.json' '${CONFIG_DST}'"
+  run cp "${SCRIPT_DIR}/config/config.example.json" "${CONFIG_DST}"
   say "wrote starter config: ${CONFIG_DST}"
   say "Run /pm-generate to fill in your capability-slot mapping."
 fi

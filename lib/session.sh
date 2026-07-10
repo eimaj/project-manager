@@ -1,8 +1,24 @@
 #!/usr/bin/env bash
 # lib/session.sh — resolve a stable per-session marker id for the PM framework.
 #
-# CLAUDE_SESSION_ID is frequently unset in the Bash-tool shell, so fall back to a
-# terminal/multiplexer session pid if present, then the parent shell pid. Echoes the
-# id on stdout. Used by pm-start (write the marker), pm-status / pm-end (read it) so
-# all three agree on which project is active in this session.
-echo "${CLAUDE_SESSION_ID:-${PM_SESSION_PID:-${TERM_SESSION_ID:-shell-$PPID}}}"
+# CLAUDE_SESSION_ID is frequently unset in the Bash-tool shell, so fall back through a
+# chain of increasingly-weak anchors. Absent any session env var, continuity relies on a
+# stable *controlling terminal*: each Bash-tool command spawns a fresh parent shell, so
+# $PPID is unstable, but the tty is constant for the session — prefer it over $PPID.
+# Resolution order: CLAUDE_SESSION_ID → PM_SESSION_PID → TERM_SESSION_ID → tty → shell-$PPID.
+# Echoes exactly one id on stdout. Used by pm-start (write the marker), pm-status / pm-end
+# (read it) so all three agree on which project is active in this session.
+
+sid="${CLAUDE_SESSION_ID:-}"
+[[ -z "$sid" ]] && sid="${PM_SESSION_PID:-}"
+[[ -z "$sid" ]] && sid="${TERM_SESSION_ID:-}"
+if [[ -z "$sid" ]]; then
+  # Controlling-terminal anchor: trim whitespace, sanitize '/' → '-'. Skip when the
+  # process has no tty (batch/CI: ps prints empty or '?'/'??').
+  tty="$(ps -o tty= -p $$ 2>/dev/null | tr -d '[:space:]')"
+  if [[ -n "$tty" && "$tty" != "?" && "$tty" != "??" ]]; then
+    sid="tty-${tty//\//-}"
+  fi
+fi
+[[ -z "$sid" ]] && sid="shell-$PPID"
+echo "$sid"

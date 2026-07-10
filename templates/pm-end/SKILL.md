@@ -28,13 +28,14 @@ description: End-of-session capture for the active PM project — runs the logge
 - **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
 - **History lives in the logger; the handoff lives in `LAST-SESSION.md`.** There is **no JOURNAL.md** — `LAST-SESSION.md` carries one block per session (it is a forward handoff, not a log).
+- **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
 
 ## Steps
 
 ### Step 1 — Resolve the project from the marker
 
 ```bash
-SID=$({{framework_root}}/lib/session.sh)        # same resolver pm-start used to write the marker
+SID=$("{{framework_root}}/lib/session.sh")        # same resolver pm-start used to write the marker
 ROOT="$(cat "{{framework_root}}/sessions/$SID" 2>/dev/null)"
 test -f "$ROOT/.pm/config.json" || { echo "No active PM project this session — run /pm-start @<path> first."; exit 1; }
 NAME=$(jq -r '.name' "$ROOT/.pm/config.json")
@@ -66,7 +67,7 @@ KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 Pipe the block body in on stdin (the helper adds the `## Session <id> — <timestamp>` heading, so use `###` subsections in the body):
 
 ```bash
-{{framework_root}}/lib/handoff-write.sh --root "$ROOT" --session "$SID" --name "$NAME" << 'EOF'
+"{{framework_root}}/lib/handoff-write.sh" --root "$ROOT" --session "$SID" --name "$NAME" << 'EOF'
 ### Current state
 - <where things stand now>
 

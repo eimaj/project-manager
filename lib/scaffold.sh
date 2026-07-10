@@ -132,6 +132,11 @@ KEYWORDS_JSON="$(csv_to_json_array "$PM_KEYWORDS")"
 # ---- write .pm/config.json (canonical; always rewritten) ----------------------
 mkdir -p "$PM_ROOT/.pm"
 CONFIG_PATH="$PM_ROOT/.pm/config.json"
+# Preserve the hand-maintained collaborators array across re-init (config.json is
+# fully rewritten below). Absent or unparseable prior config -> default to [].
+PRIOR_COLLAB=$(jq -c '.collaborators // []' "$CONFIG_PATH" 2>/dev/null || echo '[]')
+# An empty file makes jq exit 0 with no output; normalize that (and any blank) to [].
+[[ -n "$PRIOR_COLLAB" ]] || PRIOR_COLLAB='[]'
 jq -n \
   --arg name "$PM_NAME" \
   --arg root "$PM_ROOT" \
@@ -141,9 +146,10 @@ jq -n \
   --arg notes "$PM_NOTES_REF" \
   --argjson team "$TEAM_JSON" \
   --argjson keywords "$KEYWORDS_JSON" \
+  --argjson collaborators "$PRIOR_COLLAB" \
   --arg session_color "$PM_SESSION_COLOR" \
   --arg created "$CREATED_AT" \
-  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, session_color:$session_color, created:$created}' \
+  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, collaborators:$collaborators, session_color:$session_color, created:$created}' \
   > "$CONFIG_PATH"
 echo "wrote   $CONFIG_PATH"
 
@@ -254,16 +260,53 @@ REG_LINE="$(jq -n \
   --arg created "$CREATED_AT" \
   -c '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, created:$created}')"
 
-if jq -e --arg root "$PM_ROOT" 'select(.root==$root)' "$REGISTRY" >/dev/null 2>&1; then
-  TMP="$(mktemp)"
-  jq -c --arg root "$PM_ROOT" --argjson new "$REG_LINE" \
-    'if .root==$root then ($new + {created: .created}) else . end' "$REGISTRY" > "$TMP"
-  mv "$TMP" "$REGISTRY"
-  echo "updated registry entry for root $PM_ROOT"
+# Lock the registry read-modify-write: concurrent scaffolds would otherwise lose-update.
+# Same discipline as handoff-write.sh — atomic mkdir lock, short retry, stale-break at
+# 30s (breaks a lock left by a crashed run), EXIT-trap cleanup, fail loud on give-up.
+REG_LOCK="$(dirname "$REGISTRY")/.registry.lock"
+REG_STALE_AFTER=30
+reg_lock_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+reg_acquire() {  # reg_acquire <tries>
+  local tries="$1" i
+  for ((i=0; i<tries; i++)); do
+    if mkdir "$REG_LOCK" 2>/dev/null; then return 0; fi
+    sleep 0.1
+  done
+  return 1
+}
+reg_locked=""
+if reg_acquire 50; then
+  reg_locked=1
 else
-  printf '%s\n' "$REG_LINE" >> "$REGISTRY"
-  echo "appended registry entry for root $PM_ROOT"
+  now="$(date +%s)"
+  mt="$(reg_lock_mtime "$REG_LOCK")"; mt="${mt:-$now}"
+  if (( now - mt >= REG_STALE_AFTER )); then
+    echo "scaffold.sh: breaking stale registry lock (age $(( now - mt ))s) at $REG_LOCK" >&2
+    rmdir "$REG_LOCK" 2>/dev/null || true
+    reg_acquire 10 && reg_locked=1
+  fi
 fi
+[[ -n "$reg_locked" ]] || { echo "scaffold.sh: could not acquire registry lock at $REG_LOCK; aborting to avoid a lost update." >&2; exit 1; }
+trap 'rmdir "$REG_LOCK" 2>/dev/null || true' EXIT
+
+# Junk-tolerant upsert: slurp raw lines, drop blanks and any non-JSON line (a corrupt
+# line must not defeat dedup and cause a duplicate append), then update the matching
+# root in place (preserving its original `created`) or append. Order is preserved.
+UPSERTED=$(jq -R -s -r --arg root "$PM_ROOT" --argjson new "$REG_LINE" '
+    (split("\n") | map(select(length > 0)) | map(fromjson?)) as $rows
+    | ($rows | map(.root) | index($root)) as $i
+    | if $i == null then "appended" else "updated" end
+  ' "$REGISTRY")
+TMP="$(mktemp)"
+jq -R -s -r --arg root "$PM_ROOT" --argjson new "$REG_LINE" '
+    (split("\n") | map(select(length > 0)) | map(fromjson?)) as $rows
+    | ($rows | map(.root) | index($root)) as $i
+    | (if $i == null then $rows + [$new]
+       else ($rows | .[$i] |= ($new + {created: .created})) end)
+    | .[] | @json
+  ' "$REGISTRY" > "$TMP"
+mv "$TMP" "$REGISTRY"
+echo "${UPSERTED} registry entry for root $PM_ROOT"
 
 echo ""
 echo "PM scaffold complete for: $PM_NAME"

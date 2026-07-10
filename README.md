@@ -98,6 +98,13 @@ other. The framework isolates per-session state and locks the shared state it mu
   ref-safe form of the session id), so concurrent tabs never race on one shared ref or index. The
   working tree is shared, so it captures the branch you were on and restores it afterward. Never
   pushes, never targets `main`. Reconcile the per-session branches into one branch/PR at EOD.
+- **`auto_ship` (per-project, opt-in)** — a boolean in each project's `.pm/config.json`, **default
+  `false`**. When `false`, `pm-end` stops after the local per-session commit and you reconcile the
+  branches manually at EOD (above). Set it to `true` to have `pm-end` **auto-ship** each session's
+  branch via a PR — push the branch, `gh pr create` against the repo's default base, then
+  `gh pr merge --merge --delete-branch`. It ships only when a commit was actually made and a git
+  remote exists; it never pushes `main` directly and never bypasses hooks. Seeded as `false` by
+  `pm-init` and **preserved across re-init** (like `collaborators`).
 
 **Isolated per session:** the session marker, the minted id, the `LAST-SESSION.md` block, and the
 `pm-end` commit branch. **Shared (guarded by locks):** `meetings.jsonl`, `CALENDAR.md`, the git
@@ -149,7 +156,7 @@ pm/
 
 | File | Written by | Purpose |
 |---|---|---|
-| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`*_ref`, team, keywords, `collaborators`, `session_color`) |
+| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`*_ref`, team, keywords, `collaborators`, `auto_ship`, `session_color`) |
 | `CONTEXT.md` | `pm-init` seed (never clobbered) | stable hand-edited overview |
 | `CALENDAR.md` | `pm-init` seed; `pm-start` regen | Synced due dates; manual entries below `<!-- PM:MANUAL -->` preserved |
 | `meetings.jsonl` | `pm-start` appends | `{meeting_id, date, title, path}` pointers — never transcript copies |

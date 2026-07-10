@@ -32,6 +32,7 @@ description: One-time scaffolder for a long-running project under the PM framewo
 - **Scaffolder:** `{{framework_root}}/lib/scaffold.sh` (the bash generator this skill drives).
 - **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**. A slot value of `none` means that capability is disabled and the skills degrade gracefully (see each skill's empty-slot branch).
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`, plus any pre-existing `architecture/`, `adr/`, `plans/`, `meetings/`.
+- **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
 
 ## The init questions
 
@@ -43,6 +44,31 @@ description: One-time scaffolder for a long-running project under the PM framewo
 6. **Team members** (context only) — optional.
 7. **Keywords / aliases** (for search + fallback meeting/email match) — optional.
 8. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
+
+## The `collaborators` field (hand-maintained)
+
+Beyond the CSV `team` roster, `.pm/config.json` carries a richer **`collaborators`** array that `/pm-start` renders as a quick-reference. The scaffolder seeds it as `[]` (and **preserves an existing one on re-init** — it is not rebuilt from a flag or an init question), so populate and maintain it by hand:
+
+```json
+"collaborators": [
+  {
+    "name": "Jane Doe",
+    "role": "Backend",
+    "slack": "https://<workspace>.slack.com/team/U0123ABC",
+    "github": "janedoe",
+    "email": "jane.doe@company.com"
+  }
+]
+```
+
+- **`name`** / **`role`** — display name and what they do on this project.
+- **`slack`** — a Slack profile link (`https://<workspace>.slack.com/team/<USER_ID>`); resolve the user id via an MCP/org lookup (e.g. a Slack user search) **at authoring time only**.
+- **`github`** — the `@username` (store without the `@`); resolve from org membership or commit history **at authoring time only**.
+- **`email`** — work email.
+
+Leave any field you cannot resolve confidently as `""` — never fabricate a handle or link. An absent or empty `collaborators` array is treated as a TODO by `/pm-start`.
+
+**Purpose:** this is a local, hand-maintained lookup **index** — agents read it from config to resolve teammates **without calling an MCP server** (saving tokens/latency). MCP is used only when *authoring* an entry to resolve a handle; at read time it is pure local config. It is a reference index, **not** a contact, distribution, or notification list — nobody is messaged from it.
 
 ## Steps
 

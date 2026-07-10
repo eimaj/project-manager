@@ -290,6 +290,79 @@ t_sess_mint_distinct_anchors() {
 
 t_sess_ccsid; t_sess_stable; t_sess_precedence; t_sess_mint_path; t_sess_mint_distinct_anchors
 
+# ── with-lock.sh shared lock helper ───────────────────────────────────────────────
+section "with-lock.sh"
+
+WL="$REPO/lib/with-lock.sh"
+
+t_wl_mutual_exclusion() {
+  # 20 concurrent writers each do read->+1->write on a shared counter under the lock.
+  # Without mutual exclusion this read-modify-write loses updates; with it, final == 20.
+  local d="$WORK/wl_mutex"; mkdir -p "$d"
+  local counter="$d/counter" lock="$d/.c.lock" i
+  echo 0 > "$counter"
+  for ((i=0; i<20; i++)); do
+    ( source "$WL"
+      with_lock "$lock" bash -c 'n=$(cat "'"$counter"'"); echo $((n+1)) > "'"$counter"'"' ) &
+  done
+  wait
+  assert_eq 20 "$(cat "$counter")" "mutual exclusion: 20 concurrent writers, no lost update"
+  assert_eq "no" "$([[ -d "$lock" ]] && echo yes || echo no)" "mutual exclusion: lock released after each run"
+}
+
+t_wl_stale_break() {
+  # A pre-existing lock older than PM_LOCK_STALE_AFTER is broken; acquisition succeeds
+  # and the command runs. Force staleness with PM_LOCK_STALE_AFTER=0.
+  local d="$WORK/wl_stale"; mkdir -p "$d"
+  local lock="$d/.s.lock" out="$d/out" err="$d/err"
+  mkdir "$lock"                                   # simulate a lock left by a crashed run
+  ( source "$WL"; PM_LOCK_STALE_AFTER=0 with_lock "$lock" bash -c 'echo ran > "'"$out"'"' ) 2>"$err"
+  assert_file_contains "$out" "ran" "stale-break: command ran after breaking stale lock"
+  assert_file_contains "$err" "breaking stale lock" "stale-break: prints the stale-break notice"
+  assert_eq "no" "$([[ -d "$lock" ]] && echo yes || echo no)" "stale-break: lock released after run"
+}
+
+t_wl_fail_loud() {
+  # Lock held by a live background process; short retry + non-stale => with_lock must
+  # FAIL LOUD (non-zero) and NOT run the command.
+  local d="$WORK/wl_fail"; mkdir -p "$d"
+  local lock="$d/.f.lock" sentinel="$d/sentinel" rc
+  mkdir "$lock"                                   # held, fresh (not stale)
+  ( source "$WL"
+    # High stale threshold so it can't break the lock; short-lived retry (~5s) then give up.
+    PM_LOCK_STALE_AFTER=9999 with_lock "$lock" bash -c 'echo ran > "'"$sentinel"'"' ) >/dev/null 2>&1
+  rc=$?
+  assert_eq 1 "$rc" "fail-loud: returns non-zero when it cannot acquire or break"
+  assert_eq "no" "$([[ -f "$sentinel" ]] && echo yes || echo no)" "fail-loud: command did NOT run"
+  rmdir "$lock" 2>/dev/null || true
+}
+
+t_wl_meetings_dedupe() {
+  # pm-start Step 3 semantics: read existing ids + append only new ones, all INSIDE the
+  # lock. Two sequential locked appends of the same meeting_id yield exactly one line.
+  local d="$WORK/wl_dedupe"; mkdir -p "$d/.pm"
+  local jsonl="$d/meetings.jsonl" lock="$d/.pm/.meetings.lock"
+  : > "$jsonl"
+  append_pointer() {  # append_pointer <meeting_id>
+    local id="$1"
+    source "$WL"
+    with_lock "$lock" bash -c '
+      id="'"$id"'"; f="'"$jsonl"'"
+      existing=$(jq -r ".meeting_id" "$f" 2>/dev/null | sort -u)   # read INSIDE lock
+      if ! grep -qxF "$id" <<<"$existing"; then
+        jq -nc --arg id "$id" "{meeting_id:\$id,date:\"d\",title:\"t\",path:\"p\"}" >> "$f"
+      fi
+    '
+  }
+  append_pointer m1
+  append_pointer m1                               # duplicate id -> must NOT append again
+  assert_eq 1 "$(count_lines . "$jsonl")" "meetings dedupe: same id appended once"
+  append_pointer m2                               # new id -> appends
+  assert_eq 2 "$(count_lines . "$jsonl")" "meetings dedupe: new id appends"
+}
+
+t_wl_mutual_exclusion; t_wl_stale_break; t_wl_fail_loud; t_wl_meetings_dedupe
+
 # ── summary ──────────────────────────────────────────────────────────────────────
 printf '\n──────────────────────────────\n'
 printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"

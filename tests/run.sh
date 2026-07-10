@@ -132,7 +132,35 @@ t_sc_junk_line() {
   assert_eq 0 "$(count_lines 'JUNK' "$fw/registry.jsonl")" "junk line: corrupt line dropped"
 }
 
-t_sc_append; t_sc_update_inplace; t_sc_junk_line
+t_sc_collab_seed_preserve() {
+  local d="$WORK/sc_collab"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  # (1) a brand-new scaffold seeds an empty collaborators array
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq "[]" "$(jq -c '.collaborators' "$cfg")" "new scaffold seeds collaborators []"
+  # (2) hand-edit the roster, re-init the same root, roster is preserved verbatim
+  local created1; created1="$(jq -r '.created' "$fw/registry.jsonl")"
+  local roster='[{"name":"Jane Doe","role":"Backend","slack":"https://x.slack.com/team/U1","github":"janedoe","email":"jane@x.com"}]'
+  local tmp; tmp="$(mktemp)"; jq --argjson c "$roster" '.collaborators=$c' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+  sleep 1
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq "$roster" "$(jq -c '.collaborators' "$cfg")" "re-init preserves collaborators verbatim"
+  assert_eq "$created1" "$(jq -r '.created' "$fw/registry.jsonl")" "re-init: original created preserved"
+}
+
+t_sc_collab_degrades() {
+  # An empty or malformed prior config must degrade to collaborators: [] without error.
+  local d="$WORK/sc_collab_bad"; local fw="$d/fw"
+  mkdir -p "$fw" "$d/empty/.pm" "$d/junk/.pm"
+  : > "$d/empty/.pm/config.json"                 # empty file
+  printf 'not json{' > "$d/junk/.pm/config.json" # malformed json
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/empty" "$SC" >/dev/null 2>&1
+  assert_eq "[]" "$(jq -c '.collaborators' "$d/empty/.pm/config.json")" "empty prior config -> collaborators []"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/junk" "$SC" >/dev/null 2>&1
+  assert_eq "[]" "$(jq -c '.collaborators' "$d/junk/.pm/config.json")" "malformed prior config -> collaborators []"
+}
+
+t_sc_append; t_sc_update_inplace; t_sc_junk_line; t_sc_collab_seed_preserve; t_sc_collab_degrades
 
 # ── config.sh slot resolution ────────────────────────────────────────────────────
 section "config.sh"

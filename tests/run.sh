@@ -235,6 +235,61 @@ t_install_dryrun() {
 
 t_install_idempotent; t_install_dryrun
 
+# ── session.sh id resolution + mint ──────────────────────────────────────────────
+section "session.sh"
+
+SS="$REPO/lib/session.sh"
+# Run the resolver with a clean env: strip every harness session var so tests are
+# deterministic regardless of the shell the runner itself was launched in.
+sess() { env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u PM_SESSION_PID -u TERM_SESSION_ID "$@" bash "$SS"; }
+
+t_sess_ccsid() {
+  assert_eq "X" "$(sess CLAUDE_CODE_SESSION_ID=X)" "CLAUDE_CODE_SESSION_ID echoed verbatim"
+}
+
+t_sess_stable() {
+  local a b
+  a="$(sess CLAUDE_CODE_SESSION_ID=stable-1)"
+  b="$(sess CLAUDE_CODE_SESSION_ID=stable-1)"
+  assert_eq "$a" "$b" "stable across two calls with the var set"
+}
+
+t_sess_precedence() {
+  assert_eq "win" "$(sess CLAUDE_CODE_SESSION_ID=win CLAUDE_SESSION_ID=lose)" \
+    "CLAUDE_CODE_SESSION_ID precedes CLAUDE_SESSION_ID"
+}
+
+t_sess_mint_path() {
+  # All session env vars unset → drive the mint path. Simulate pm-start's mint write,
+  # then confirm session.sh's read-only mint lookup returns the SAME uuid next call.
+  local d="$WORK/sess_mint"; mkdir -p "$d/sessions/.mint"
+  local anchor="tty-fixedA" uuid="11111111-2222-3333-4444-555555555555"
+  local first
+  first="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="$anchor")"
+  if [[ "$first" == tty-* || "$first" == shell-* ]]; then pass "no mint file -> weak id"
+  else fail "no mint file -> weak id" "got=[$first]"; fi
+  printf '%s\n' "$uuid" > "$d/sessions/.mint/$anchor"   # pm-start mint write (simulated)
+  local second
+  second="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="$anchor")"
+  assert_eq "$uuid" "$second" "mint lookup returns persisted uuid for same anchor"
+}
+
+t_sess_mint_distinct_anchors() {
+  # Two distinct anchors → two distinct minted ids (sessions never collapse together).
+  local d="$WORK/sess_mint2"; mkdir -p "$d/sessions/.mint"
+  printf 'uuid-aaa\n' > "$d/sessions/.mint/tty-A"
+  printf 'uuid-bbb\n' > "$d/sessions/.mint/tty-B"
+  local a b
+  a="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="tty-A")"
+  b="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="tty-B")"
+  assert_eq "uuid-aaa" "$a" "anchor A resolves its own mint"
+  assert_eq "uuid-bbb" "$b" "anchor B resolves its own mint"
+  if [[ "$a" != "$b" ]]; then pass "distinct anchors -> distinct ids"
+  else fail "distinct anchors -> distinct ids" "both=[$a]"; fi
+}
+
+t_sess_ccsid; t_sess_stable; t_sess_precedence; t_sess_mint_path; t_sess_mint_distinct_anchors
+
 # ── summary ──────────────────────────────────────────────────────────────────────
 printf '\n──────────────────────────────\n'
 printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"

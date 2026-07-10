@@ -189,8 +189,72 @@ t_sc_autoship_flag_and_degrades() {
   assert_eq "false" "$(jq -c '.auto_ship' "$d/junk/.pm/config.json")" "malformed prior config -> auto_ship false"
 }
 
+t_sc_unknown_fields_preserved() {
+  # The core fix: re-init MERGES managed fields onto the existing config, so unknown/extra
+  # fields (linear_project, granola_folder, crrt_tag, ...) survive verbatim.
+  local d="$WORK/sc_unknown"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" PM_TRACKER_REF=T1 "$SC" >/dev/null 2>&1
+  # hand-add unknown fields the tool-agnostic scaffold does not manage
+  local tmp; tmp="$(mktemp)"
+  jq '.linear_project="PROJ-123" | .granola_folder="Team Sync" | .crrt_tag="foo" | .linear_project_id="abc-123"' \
+    "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+  local created1; created1="$(jq -r '.created' "$cfg")"
+  sleep 1
+  # re-init with a changed name + tracker; unknowns must survive, known fields update
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=Renamed PM_ROOT="$d/pa" PM_TRACKER_REF=T2 "$SC" >/dev/null 2>&1
+  assert_eq "PROJ-123"  "$(jq -r '.linear_project' "$cfg")"     "re-init preserves unknown linear_project"
+  assert_eq "Team Sync" "$(jq -r '.granola_folder' "$cfg")"     "re-init preserves unknown granola_folder"
+  assert_eq "foo"       "$(jq -r '.crrt_tag' "$cfg")"           "re-init preserves unknown crrt_tag"
+  assert_eq "abc-123"   "$(jq -r '.linear_project_id' "$cfg")"  "re-init preserves unknown linear_project_id"
+  assert_eq "Renamed"   "$(jq -r '.name' "$cfg")"               "re-init updates managed name"
+  assert_eq "T2"        "$(jq -r '.tracker_ref' "$cfg")"        "re-init updates managed tracker_ref"
+  assert_eq "$created1" "$(jq -r '.created' "$cfg")"            "re-init preserves config created"
+  if jq -e . "$cfg" >/dev/null 2>&1; then pass "re-init config is valid JSON"
+  else fail "re-init config is valid JSON"; fi
+}
+
+t_sc_empty_input_no_clobber() {
+  # Requirement #3: a blank input for a managed field must NOT overwrite a prior non-empty value.
+  local d="$WORK/sc_noclobber"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" PM_TRACKER_REF=KEEP-ME \
+    PM_MEETING_REF=MeetFolder PM_KEYWORDS="alpha,beta" "$SC" >/dev/null 2>&1
+  # re-init with no tracker/meeting/keywords inputs at all -> prior values must remain
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq "KEEP-ME"    "$(jq -r '.tracker_ref' "$cfg")"  "empty input keeps prior tracker_ref"
+  assert_eq "MeetFolder" "$(jq -r '.meeting_ref' "$cfg")"  "empty input keeps prior meeting_ref"
+  assert_eq '["alpha","beta"]' "$(jq -c '.keywords' "$cfg")" "empty input keeps prior keywords"
+}
+
+t_sc_fresh_created_present() {
+  # A brand-new scaffold stamps a fresh created timestamp.
+  local d="$WORK/sc_created"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  local c; c="$(jq -r '.created' "$cfg")"
+  if [[ -n "$c" && "$c" != "null" ]]; then pass "fresh scaffold stamps created"
+  else fail "fresh scaffold stamps created" "got=[$c]"; fi
+}
+
+t_sc_malformed_prior_new() {
+  # A malformed/empty prior config is treated as new: no crash, no garbage carried over.
+  local d="$WORK/sc_malformed"; local fw="$d/fw"
+  mkdir -p "$fw" "$d/junk/.pm"
+  printf 'not json{ linear_project garbage' > "$d/junk/.pm/config.json"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=Fresh PM_ROOT="$d/junk" PM_TRACKER_REF=T "$SC" >/dev/null 2>&1
+  local cfg="$d/junk/.pm/config.json"
+  if jq -e . "$cfg" >/dev/null 2>&1; then pass "malformed prior -> valid JSON written"
+  else fail "malformed prior -> valid JSON written"; fi
+  assert_eq "Fresh" "$(jq -r '.name' "$cfg")"        "malformed prior -> managed name set"
+  assert_eq "[]"    "$(jq -c '.collaborators' "$cfg")" "malformed prior -> collaborators []"
+  assert_eq "false" "$(jq -c '.auto_ship' "$cfg")"     "malformed prior -> auto_ship false"
+  assert_eq "null"  "$(jq -r '.linear_project' "$cfg")" "malformed prior -> no garbage carried over"
+}
+
 t_sc_append; t_sc_update_inplace; t_sc_junk_line; t_sc_collab_seed_preserve; t_sc_collab_degrades
 t_sc_autoship_seed_preserve; t_sc_autoship_flag_and_degrades
+t_sc_unknown_fields_preserved; t_sc_empty_input_no_clobber; t_sc_fresh_created_present; t_sc_malformed_prior_new
 
 # ── config.sh slot resolution ────────────────────────────────────────────────────
 section "config.sh"

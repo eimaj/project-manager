@@ -113,11 +113,18 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 ### Step 4 — Regenerate CALENDAR.md — tracker slot
 
 - **If the `tracker` slot is `none`:** **skip the live due-date pull.** Leave the Synced section as `_(tracker slot is none — no due dates synced)_` and **preserve everything below the `<!-- PM:MANUAL -->` marker verbatim.** Say so in the briefing.
-- **Else:** pull forward-looking due dates for `TRACKER_REF` from **{{tracker}}**, rewrite the **Synced** section above the marker, and **preserve everything below it verbatim** (hand-added dated items). Sort synced entries by date. If `TRACKER_REF` is blank, leave Synced as `_(no tracker project configured — TODO)_` and still preserve Manual.
+- **Else:** pull forward-looking due dates for `TRACKER_REF` from **{{tracker}}**, rewrite the **Synced** section above the marker, and **preserve everything below it verbatim** (hand-added dated items). Sort synced entries by date. If `TRACKER_REF` is blank, leave Synced as `_(no tracker project configured — TODO)_` and still preserve Manual. **Run the read-modify-write under a lock** so concurrent tabs can't clobber each other's regeneration; write to a temp file and atomic-`mv` into place so a reader never sees a half-rewritten file:
 
   ```bash
-  MARKER='<!-- PM:MANUAL'
-  # preserved="$(sed -n "/$MARKER/,\$p" "$ROOT/CALENDAR.md")"   # marker line onward, kept as-is
+  source "{{framework_root}}/lib/with-lock.sh"
+  regen_calendar() {
+    MARKER='<!-- PM:MANUAL'
+    # preserved="$(sed -n "/$MARKER/,\$p" "$ROOT/CALENDAR.md")"   # marker line onward, kept verbatim
+    # rebuild the Synced section above the marker, re-emit "$preserved" unchanged below it,
+    # then atomic-mv the temp file over "$ROOT/CALENDAR.md".
+  }
+  mkdir -p "$ROOT/.pm"
+  with_lock "$ROOT/.pm/.calendar.lock" regen_calendar
   ```
 
 ### Step 5 — Read handoff + open work

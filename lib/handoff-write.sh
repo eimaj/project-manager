@@ -53,16 +53,44 @@ TS="$(date '+%Y-%m-%d %H:%M')"
 START="<!-- PM:SESSION ${SID} START -->"
 END="<!-- PM:SESSION ${SID} END -->"
 
-# ---- lock (mkdir is atomic; best-effort with short retry) ---------------------
+# ---- lock (mkdir is atomic; short retry, then stale-break, then fail loud) ----
+# A crashed / kill -9'd run can leave the mkdir lock behind forever, so if acquisition
+# keeps failing we check the lock's age and break a lock older than STALE_AFTER, then
+# retry once. If we still cannot acquire, we FAIL LOUDLY (non-zero) rather than proceed
+# unlocked and silently lose-update another session's block.
 mkdir -p "$ROOT/.pm"
 LOCK="$ROOT/.pm/.handoff.lock"
+STALE_AFTER=30
+
+lock_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+acquire_lock() {  # acquire_lock <tries>
+  local tries="$1" i
+  for ((i=0; i<tries; i++)); do
+    if mkdir "$LOCK" 2>/dev/null; then return 0; fi
+    sleep 0.1
+  done
+  return 1
+}
+
 locked=""
-for _ in $(seq 1 50); do
-  if mkdir "$LOCK" 2>/dev/null; then locked=1; break; fi
-  sleep 0.1
-done
-[[ -n "$locked" ]] && trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT \
-  || echo "handoff-write.sh: proceeding without lock (held elsewhere)" >&2
+if acquire_lock 50; then
+  locked=1
+else
+  now="$(date +%s)"
+  mt="$(lock_mtime "$LOCK")"; mt="${mt:-$now}"
+  age=$(( now - mt ))
+  if (( age >= STALE_AFTER )); then
+    echo "handoff-write.sh: breaking stale lock (age ${age}s) at $LOCK" >&2
+    rmdir "$LOCK" 2>/dev/null || true
+    acquire_lock 10 && locked=1
+  fi
+fi
+if [[ -n "$locked" ]]; then
+  trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+else
+  echo "handoff-write.sh: could not acquire lock at $LOCK (held by a live run?); aborting to avoid a lost update." >&2
+  exit 1
+fi
 
 # ---- ensure the file exists with a header; wrap legacy content once -----------
 if [[ ! -f "$FILE" ]]; then

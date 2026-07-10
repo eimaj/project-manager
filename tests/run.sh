@@ -363,6 +363,85 @@ t_wl_meetings_dedupe() {
 
 t_wl_mutual_exclusion; t_wl_stale_break; t_wl_fail_loud; t_wl_meetings_dedupe
 
+# ── session-commit.sh per-session commit branch ───────────────────────────────────
+section "session-commit.sh"
+
+SCM="$REPO/lib/session-commit.sh"
+
+# Init a throwaway git repo (under $WORK, cleaned on exit) with a project subfolder "pa"
+# and one seed commit so there is a branch to restore to. All git ops target this nested
+# repo via -C, never the surrounding pm repo.
+scm_mk_repo() {  # scm_mk_repo <repo_dir>
+  local repo="$1"
+  git init -q "$repo"
+  git -C "$repo" config user.email t@example.com
+  git -C "$repo" config user.name  Tester
+  git -C "$repo" config commit.gpgsign false
+  mkdir -p "$repo/pa/.pm"
+  echo seed > "$repo/pa/seed.txt"
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "chore: seed"
+}
+
+t_scm_shortsid() {
+  # Pure sanitizer (sourced, no git): [a-z0-9-], collapsed, trimmed, <=12, ref-safe.
+  ( source "$SCM"
+    assert_eq "a-b-c"   "$(session_shortsid 'a/b c')"  "shortsid: slashes+spaces -> single hyphens"
+    assert_eq "abc-def" "$(session_shortsid 'ABC_def')" "shortsid: lowercased, non-alnum -> hyphen"
+    local long; long="$(session_shortsid '11111111-2222-3333-4444-555555555555')"
+    assert_eq 12 "${#long}" "shortsid: capped at 12 chars"
+    local weird; weird="$(session_shortsid '///   ///')"
+    if [[ -n "$weird" && "$weird" =~ ^[a-z0-9-]+$ ]]; then pass "shortsid: all-symbol sid -> non-empty ref-safe"
+    else fail "shortsid: all-symbol sid -> non-empty ref-safe" "got=[$weird]"; fi )
+}
+
+t_scm_distinct_branches() {
+  # Two distinct sids -> two distinct branches, each with exactly one commit touching
+  # only the project folder; the original branch is restored after each run.
+  local d="$WORK/scm_distinct"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  echo a1 > "$repo/pa/a.txt"
+  local ba; ba="$("$SCM" --root "$repo/pa" --session "sid-AAA" --name "Demo Proj")"
+  echo b1 > "$repo/pa/b.txt"
+  local bb; bb="$("$SCM" --root "$repo/pa" --session "sid-BBB" --name "Demo Proj")"
+  if [[ "$ba" != "$bb" ]]; then pass "distinct sids -> distinct branches"
+  else fail "distinct sids -> distinct branches" "both=[$ba]"; fi
+  assert_contains "$ba" "-pm-sid-aaa" "branch A carries session suffix"
+  assert_contains "$bb" "-pm-sid-bbb" "branch B carries session suffix"
+  assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$ba")" "branch A: exactly one new commit"
+  assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$bb")" "branch B: exactly one new commit"
+  assert_eq "pa/a.txt" "$(git -C "$repo" show --name-only --format= "$ba")" "branch A commit touches only project folder"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "original branch restored after commits"
+}
+
+t_scm_weird_sid_valid_ref() {
+  # A weird sid must still yield a branch git accepts as a valid ref.
+  local d="$WORK/scm_weird"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  echo x > "$repo/pa/x.txt"
+  local br; br="$("$SCM" --root "$repo/pa" --session 'a/b c' --name "Demo Proj")"
+  assert_contains "$br" "-pm-a-b-c" "weird sid sanitized into ref-safe suffix"
+  if git check-ref-format "refs/heads/$br"; then pass "weird sid -> valid ref name"
+  else fail "weird sid -> valid ref name" "invalid=[$br]"; fi
+}
+
+t_scm_no_empty_commit() {
+  # No changes under the project folder -> no commit; original branch restored.
+  local d="$WORK/scm_empty"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  local br; br="$("$SCM" --root "$repo/pa" --session "sid-C" --name "Demo Proj")"
+  assert_eq 0 "$(git -C "$repo" rev-list --count "$base..$br")" "no changes -> no empty commit"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "no-change: original branch restored"
+}
+
+if command -v git >/dev/null 2>&1; then
+  t_scm_shortsid; t_scm_distinct_branches; t_scm_weird_sid_valid_ref; t_scm_no_empty_commit
+else
+  echo "  skip git not available — session-commit.sh integration tests skipped"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────────
 printf '\n──────────────────────────────\n'
 printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"

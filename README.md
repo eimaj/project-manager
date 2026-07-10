@@ -3,10 +3,11 @@
 `pm` is a Claude Code skill package whose centerpiece, **`/pm-generate`**, interviews you
 about your tools and writes a *personalized* project-management workflow into your
 `~/.claude`: a `pm-init` / `pm-start` / `pm-status` / `pm-end` skill set tuned to *your*
-meeting source, tracker, logger, and notes store — no one else's tools or hardcoded paths.
+meeting source, tracker, logger, email, and notes store — no one else's tools or hardcoded paths.
 
 The workflow it generates gives you **per-project context, live session sync, and clean
-handoffs** across long-running, multi-session projects.
+handoffs** across long-running work — including **concurrent sessions** in separate tabs that
+never clobber each other's state.
 
 ---
 
@@ -43,16 +44,116 @@ slots are filled — so the same package works with *your* stack, not the author
 
 ### The generated session lifecycle
 
-- **`pm-init`** — one-time per project: scaffolds `.pm/config.json`, `CONTEXT.md`,
-  `CALENDAR.md`, `meetings.jsonl`, and registers the project. Flows straight into `pm-start`.
-- **`pm-start`** — open a project for the session: **live sync** (meeting catch-up + tracker
-  due dates), prints a briefing, writes a per-session marker.
-- **`pm-status`** — cache-only, rerunnable briefing; runs the hygiene guard first; no network.
-- **`pm-end`** — EOD capture: hygiene guard, session summary, and a per-session handoff block
-  written into `LAST-SESSION.md` without clobbering other sessions' blocks.
+| Skill | When | What it does | Network |
+|---|---|---|---|
+| **`pm-init`** | once per project | scaffolds `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`; upserts the registry (deduped by root). Flows straight into `pm-start`. | none |
+| **`pm-start`** | once at session open | writes the per-session marker, **live sync** (meeting catch-up + inbox scan + tracker due dates), prints the briefing + a paste-ready `/rename`+`/color` block | live |
+| **`pm-status`** | anytime, rerunnable | hygiene guard first, then a briefing from cached files only | none |
+| **`pm-end`** | wrapping up | hygiene guard, session summary, per-session `LAST-SESSION.md` handoff block, optional per-session git commit | none |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the framework dir, registry, sessions,
-and per-project file layout.
+### The `collaborators` index
+
+Beyond the CSV `team` field, each project's `.pm/config.json` carries a hand-maintained
+**`collaborators`** array — a per-project roster of `{name, role, slack, github, email}`:
+
+```json
+"collaborators": [
+  { "name": "Jane Doe", "role": "Backend",
+    "slack": "https://<workspace>.slack.com/team/U0123ABC",
+    "github": "janedoe", "email": "jane.doe@company.com" }
+]
+```
+
+- **Seeded as `[]`** by `pm-init` and **preserved verbatim across re-init** (it is never rebuilt
+  from a flag or an init question — you populate and maintain it by hand).
+- `pm-start` renders it as a quick-reference **Name | Role | Slack | GitHub** table; absent/empty
+  prints a TODO.
+- It is a **local, read-only lookup index** — agents read it from config to resolve a teammate's
+  handle **without an MCP call**. MCP is used only when *authoring* an entry. It is **not** a
+  contact, distribution, or notification list — nobody is ever messaged from it.
+
+### Multi-session / concurrency model
+
+Two Claude Code tabs can work the same (or different) projects at once without clobbering each
+other. The framework isolates per-session state and locks the shared state it must touch.
+
+- **Session identity** — `lib/session.sh` resolves a stable id, preferring
+  `CLAUDE_CODE_SESSION_ID` (a real per-tab UUID, stable within a tab and distinct across tabs),
+  then falling through `CLAUDE_SESSION_ID` → `PM_SESSION_PID` → `TERM_SESSION_ID` → a minted UUID
+  → a controlling-tty anchor → `shell-$PPID`. When no harness var is set, `pm-start` (the only
+  writer) **mints** a UUID once and persists it under `sessions/.mint/<anchor>`; `session.sh` is a
+  pure reader that rediscovers it, so `pm-start`/`pm-status`/`pm-end` all resolve the identical id.
+- **Per-session marker** — `pm-start` writes `sessions/<id>` = the active project root; `pm-status`
+  and `pm-end` only read it. Each tab holds its own marker.
+- **Per-session handoff** — `LAST-SESSION.md` holds **one block per session**
+  (`<!-- PM:SESSION <id> START -->`). `lib/handoff-write.sh` replaces only the calling session's
+  block and preserves every other session's, under an atomic `mkdir` lock; a pre-existing
+  marker-less file is wrapped once as a `legacy` block.
+- **Locked shared writes** — `lib/with-lock.sh` (atomic-`mkdir` acquire → short retry →
+  break a >30s stale lock → fail loud) guards `meetings.jsonl` append (the dedupe read + append
+  run **inside** one lock) and `CALENDAR.md` regeneration (temp file + atomic `mv`). `scaffold.sh`
+  uses the same helper for the registry upsert.
+- **Per-session commit branch** — `pm-end`'s optional git step (`lib/session-commit.sh`) commits
+  **only the project folder** on a per-session branch `chore/$DAY-$SLUG-pm-<shortsid>` (short,
+  ref-safe form of the session id), so concurrent tabs never race on one shared ref or index. The
+  working tree is shared, so it captures the branch you were on and restores it afterward. Never
+  pushes, never targets `main`. Reconcile the per-session branches into one branch/PR at EOD.
+
+**Isolated per session:** the session marker, the minted id, the `LAST-SESSION.md` block, and the
+`pm-end` commit branch. **Shared (guarded by locks):** `meetings.jsonl`, `CALENDAR.md`, the git
+working copy, and the global `registry.jsonl`.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+[docs/CAPABILITY-SLOTS.md](docs/CAPABILITY-SLOTS.md) for full detail.
+
+---
+
+## Structure
+
+### Repo layout (source of truth)
+
+```
+pm/
+  install.sh                 # idempotent installer (symlink + lib + state + starter config)
+  lib/                       # tool-agnostic bash, installed into the framework dir
+    session.sh               #   resolve a stable per-session id (read-only)
+    with-lock.sh             #   reusable atomic mkdir lock (retry/stale-break/fail-loud)
+    scaffold.sh              #   scaffold a project's files; upsert the registry
+    handoff-write.sh         #   atomic per-session LAST-SESSION.md block update
+    session-commit.sh        #   per-session pm-end commit branch
+    config.sh                #   read the personal config, export PM_* slot vars
+  templates/pm-{init,start,status,end}/SKILL.md   # placeholder skills, RENDERED by pm-generate
+  skills/pm-generate/        # the generator skill itself (symlinked by install.sh)
+  docs/                      # ARCHITECTURE.md, CAPABILITY-SLOTS.md
+  config/config.example.json # personal-config template ({{placeholders}})
+  tests/run.sh               # pure-bash test suite (bash + jq only)
+```
+
+### On-disk install layout
+
+```
+~/.claude/skills/
+  pm-generate -> <repo>/skills/pm-generate   # SYMLINK (clog-style; tracks the repo)
+  pm-{init,start,status,end}/SKILL.md        # RENDERED real files (your slot values baked in)
+
+~/.claude/pm/                 # framework dir — lib + runtime state ONLY (no skills)
+  lib/                        # copied from the repo
+  registry.jsonl              # project list (append-only, deduped by root) — gitignored state
+  sessions/<id>               # per-session marker → active project root — gitignored state
+
+~/.config/pm/config.json      # personal slot→tool mapping + paths — gitignored, never committed
+~/.pm-notes/                  # default notes_store root (project files + meeting archive)
+```
+
+### Per-project files (in a project root)
+
+| File | Written by | Purpose |
+|---|---|---|
+| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`*_ref`, team, keywords, `collaborators`, `session_color`) |
+| `CONTEXT.md` | `pm-init` seed (never clobbered) | stable hand-edited overview |
+| `CALENDAR.md` | `pm-init` seed; `pm-start` regen | Synced due dates; manual entries below `<!-- PM:MANUAL -->` preserved |
+| `meetings.jsonl` | `pm-start` appends | `{meeting_id, date, title, path}` pointers — never transcript copies |
+| `LAST-SESSION.md` | `pm-end` (per-session block) | forward handoff; one block per session, never cross-clobbered |
 
 ---
 
@@ -60,10 +161,13 @@ and per-project file layout.
 
 - **Context that survives session boundaries** — per-project `CONTEXT.md` + `LAST-SESSION.md`
   handoffs mean you resume exactly where you left off.
-- **Live sync at session open** — meetings and tracker due dates pulled automatically by `pm-start`.
+- **Live sync at session open** — meetings, inbox action items, and tracker due dates pulled
+  automatically by `pm-start`.
 - **Cheap status, expensive only when needed** — `pm-status` is cache-only/rerunnable; network
   work is isolated to `pm-start`.
 - **Clean EOD capture** — `pm-end` writes a structured handoff without clobbering other sessions' blocks.
+- **Safe concurrency** — per-session ids, markers, handoff blocks, and commit branches plus locked
+  shared writes let multiple tabs run at once without lost updates.
 - **Tool-agnostic** — capability slots mean it works with *your* stack, not the author's.
 - **Familiar install** — the same symlink + gitignored-config convention as
   [`clog`](https://github.com/eimaj/clog). *(Caveat: the **generated** `pm-*` skills are rendered as real

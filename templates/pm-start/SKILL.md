@@ -31,6 +31,7 @@ description: Open a PM-framework project for the session — sets the per-sessio
 - **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
 - **Meetings = pointers, not copies.** The meeting archive lives under `{{notes_root}}/meetings`. The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
+- **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) this skill renders as a quick-reference (Step 6). A local lookup index read from config — no live/MCP call at read time. Absent/empty = TODO.
 
 ## Steps
 
@@ -56,6 +57,7 @@ NOTES_REF=$(jq -r '.notes_ref // ""' "$ROOT/.pm/config.json")
 KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 NAME=$(jq -r '.name // ""' "$ROOT/.pm/config.json")
 SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
+COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster for the Step 6 quick-reference
 ```
 
 (Session branding — `/rename` + `/color` — is printed at the end in Step 8 for the user to paste; slash commands can't be invoked programmatically.)
@@ -120,6 +122,7 @@ Print these sections in order (omit a source's section when its slot is `none`, 
 - **Upcoming** — `CALENDAR.md`
 - **Recent meetings** — last few pointers from `meetings.jsonl`
 - **Focus today** — your synthesis (lead from LAST-SESSION next-up)
+- **Collaborators** — a quick-reference table from `$COLLABORATORS` (`config.collaborators`): **Name | Role | Slack | GitHub**. Render `slack` as the profile link and `github` as `@<username>`; leave a cell blank when the field is `""`. If the array is absent or empty, print `_(no collaborators configured — TODO)_` — do not fabricate people or handles. This is read from local config (no live/MCP call).
 - **Quick links** — tracker project URL, repos, key docs from `CONTEXT.md`
 
 ### Step 7 — Log it — logger slot

@@ -63,7 +63,7 @@ identical for everyone, is symlinked — exactly the clog convention.
 
 | File | Written by | Purpose |
 |---|---|---|
-| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`name`, `*_ref` incl. `email_ref`, team, keywords, color) |
+| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`name`, `*_ref` incl. `email_ref`, team, keywords, collaborators, session_color) |
 | `CONTEXT.md` | `pm-init` (seed; never clobbered) | stable hand-edited overview |
 | `CALENDAR.md` | `pm-init` seed; `pm-start` regenerates Synced section | forward-looking dates; manual entries below the `<!-- PM:MANUAL -->` marker are preserved |
 | `meetings.jsonl` | `pm-start` appends pointers | `{meeting_id, date, title, path}` pointers into the meeting archive — never transcript copies |

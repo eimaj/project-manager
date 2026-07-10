@@ -132,6 +132,11 @@ KEYWORDS_JSON="$(csv_to_json_array "$PM_KEYWORDS")"
 # ---- write .pm/config.json (canonical; always rewritten) ----------------------
 mkdir -p "$PM_ROOT/.pm"
 CONFIG_PATH="$PM_ROOT/.pm/config.json"
+# Preserve the hand-maintained collaborators array across re-init (config.json is
+# fully rewritten below). Absent or unparseable prior config -> default to [].
+PRIOR_COLLAB=$(jq -c '.collaborators // []' "$CONFIG_PATH" 2>/dev/null || echo '[]')
+# An empty file makes jq exit 0 with no output; normalize that (and any blank) to [].
+[[ -n "$PRIOR_COLLAB" ]] || PRIOR_COLLAB='[]'
 jq -n \
   --arg name "$PM_NAME" \
   --arg root "$PM_ROOT" \
@@ -141,9 +146,10 @@ jq -n \
   --arg notes "$PM_NOTES_REF" \
   --argjson team "$TEAM_JSON" \
   --argjson keywords "$KEYWORDS_JSON" \
+  --argjson collaborators "$PRIOR_COLLAB" \
   --arg session_color "$PM_SESSION_COLOR" \
   --arg created "$CREATED_AT" \
-  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, session_color:$session_color, created:$created}' \
+  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, collaborators:$collaborators, session_color:$session_color, created:$created}' \
   > "$CONFIG_PATH"
 echo "wrote   $CONFIG_PATH"
 

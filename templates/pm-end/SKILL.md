@@ -13,7 +13,7 @@ description: End-of-session capture for the active PM project — runs the logge
 **Use when:** wrapping up a work session on the active project — "I'm done", "wrap up", "/pm-end". Captures state so the next `/pm-start` can lead with it.
 **Do NOT use when:** opening the session → `/pm-start`. A quick mid-session recap → `/pm-status`.
 **Inputs expected:** none — resolves the project from the per-session marker.
-**Outputs produced:** backfilled logger entries (the guard, if a logger is configured); a tagged note (if logger/notes support it); an updated `<root>/LAST-SESSION.md` block for this session.
+**Outputs produced:** backfilled logger entries (the guard, if a logger is configured); a tagged note (if logger/notes support it); an updated `<root>/LAST-SESSION.md` block for this session; and (when the project is in a git repo) a commit of the project folder on this session's own branch `chore/<day>-<slug>-pm-<shortsid>`.
 
 ## Related Skills
 
@@ -84,28 +84,27 @@ EOF
 
 ### Step 6 — Commit the session's changes (optional)
 
-If the project folder is inside a git repo, land the session's work via a single **per-day branch + PR** — never push directly to `main`. **Stage ONLY the project folder (`$REL/`) — nothing outside it.** If there are no changes under the project folder, skip the commit (no empty commit). If the project is not in a git repo, skip this step.
+If the project folder is inside a git repo, land the session's work on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` — never push directly to `main`. Each tab commits to a **distinct per-session branch** (keyed by a short, ref-safe form of `$SID`), so concurrent tabs never race on the same ref or index. The helper does all of this: it **stages ONLY the project folder (`$REL/`)**, skips the commit when there are nothing to commit (no empty commit), and — because the working tree is shared across tabs — **captures the branch you were on and restores it afterward** so another tab isn't left checked out on this tab's pm branch. If the project is not in a git repo, it prints a notice and skips. `$SID` and `$NAME` were resolved in Step 1.
 
 ```bash
-REPO=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null) || { echo "not a git repo — skipping commit"; REPO=""; }
-if [[ -n "$REPO" ]]; then
-  REL="${ROOT#"$REPO"/}"
-  DAY=$(date +%Y-%m-%d)
-  SLUG=$(printf '%s' "$NAME" | tr '[:upper:] ' '[:lower:]-')
-  BRANCH="chore/$DAY-$SLUG-pm"
-  if git -C "$REPO" rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
-    git -C "$REPO" checkout "$BRANCH"
-  else
-    git -C "$REPO" checkout -b "$BRANCH"
-  fi
-  git -C "$REPO" add "$REL/"                       # only the project folder — nothing outside $REL/
-  if ! git -C "$REPO" diff --cached --quiet -- "$REL/"; then
-    git -C "$REPO" commit -m "docs(pm): $SLUG session $DAY"   # type(scope): subject, <=50 chars
-  fi
-fi
+BRANCH=$("{{framework_root}}/lib/session-commit.sh" --root "$ROOT" --session "$SID" --name "$NAME")
 ```
 
-If the commit-message hook rejects the message, fix the message — never bypass hooks.
+Only paths under `$ROOT` are ever staged; unrelated dirty files outside the project folder stay unstaged and travel with the checkout (no stashing). If the commit-message hook rejects the message, fix the message — never bypass hooks.
+
+#### Reconcile session branches (end of day)
+
+Because each tab produces its own `chore/<day>-<slug>-pm-<shortsid>` branch, reconcile them at end of day into a single branch (or one PR per day) and delete the merged session branches. This is **advisory** — `/pm-end` never auto-merges or auto-pushes (matches the "never push to `main`" rule and the "never bypass hooks" note above).
+
+```bash
+DAY=$(date +%Y-%m-%d); SLUG=$(printf '%s' "$NAME" | tr '[:upper:] ' '[:lower:]-')
+# List today's per-session pm branches:
+git -C "$REPO" branch --list "chore/$DAY-$SLUG-pm-*"
+# Merge them onto a single day branch, then delete the merged ones:
+git -C "$REPO" checkout -b "chore/$DAY-$SLUG-pm" 2>/dev/null || git -C "$REPO" checkout "chore/$DAY-$SLUG-pm"
+#   ... git merge each session branch ...   (their commit messages already conform)
+#   ... then: git branch -d chore/$DAY-$SLUG-pm-<shortsid>   (the branch-cleanup skill can help)
+```
 
 ### Step 7 — Log it — logger slot
 
@@ -128,7 +127,7 @@ Print this only when the project has a `session_color` configured; skip it other
 - **LAST-SESSION.md is per-session blocks** — write only *your* session's block via `handoff-write.sh` (it replaces your block, preserves others). Never overwrite the whole file: a concurrent session on the same project may own another block.
 - **No JOURNAL.md** — do not create one.
 - **Every slot has an explicit `none` branch** — never fabricate logger/tracker activity for a disabled slot.
-- **Commit (when in a repo) is scoped to the project folder** — stage only paths under `$ROOT`, on a per-day branch; never push to `main`, never stage files outside the project folder.
+- **Commit (when in a repo) is scoped to the project folder** — stage only paths under `$ROOT`, on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` (never the shared per-day branch); the shared working tree is restored to the branch you were on afterward; never push to `main`, never stage files outside the project folder. Reconcile the per-session branches at end of day (see Step 6).
 
 ## Signal Keywords
 <!-- Comma-separated terms the skills collector uses to attribute learnings to this skill -->

@@ -28,6 +28,7 @@
 #   PM_TEAM          | --team           comma-separated team members (optional)
 #   PM_KEYWORDS      | --keywords       comma-separated keywords/aliases (optional)
 #   PM_SESSION_COLOR | --session-color  Claude Code session color (optional)
+#   PM_AUTO_SHIP     | --auto-ship      auto-ship pm-end session branch: true|false (optional)
 #
 # Behavior:
 #   - Writes <root>/.pm/config.json, CONTEXT.md, CALENDAR.md, meetings.jsonl.
@@ -63,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --team)          PM_TEAM="$2"; shift 2 ;;
     --keywords)      PM_KEYWORDS="$2"; shift 2 ;;
     --session-color) PM_SESSION_COLOR="$2"; shift 2 ;;
+    --auto-ship)     PM_AUTO_SHIP="$2"; shift 2 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -105,6 +107,12 @@ PM_NOTES_REF="${PM_NOTES_REF:-}"
 PM_TEAM="${PM_TEAM:-}"
 PM_KEYWORDS="${PM_KEYWORDS:-}"
 PM_SESSION_COLOR="${PM_SESSION_COLOR:-}"
+# auto_ship override: empty = no override (keep prior / default). Validate when set.
+PM_AUTO_SHIP="${PM_AUTO_SHIP:-}"
+if [[ -n "$PM_AUTO_SHIP" && "$PM_AUTO_SHIP" != "true" && "$PM_AUTO_SHIP" != "false" ]]; then
+  echo "scaffold.sh: --auto-ship must be 'true' or 'false' (got: $PM_AUTO_SHIP)" >&2
+  exit 2
+fi
 
 if [[ ! -d "$PM_ROOT" ]]; then
   echo "scaffold.sh: root does not exist: $PM_ROOT" >&2
@@ -137,6 +145,12 @@ CONFIG_PATH="$PM_ROOT/.pm/config.json"
 PRIOR_COLLAB=$(jq -c '.collaborators // []' "$CONFIG_PATH" 2>/dev/null || echo '[]')
 # An empty file makes jq exit 0 with no output; normalize that (and any blank) to [].
 [[ -n "$PRIOR_COLLAB" ]] || PRIOR_COLLAB='[]'
+# Preserve the per-project auto_ship flag across re-init (config.json is fully rewritten).
+# Absent or unparseable prior config -> default false. An explicit --auto-ship/PM_AUTO_SHIP
+# override (validated above) wins over the prior value.
+PRIOR_AUTOSHIP=$(jq -r '.auto_ship // false' "$CONFIG_PATH" 2>/dev/null || echo false)
+[[ "$PRIOR_AUTOSHIP" == "true" || "$PRIOR_AUTOSHIP" == "false" ]] || PRIOR_AUTOSHIP=false
+[[ -n "$PM_AUTO_SHIP" ]] && PRIOR_AUTOSHIP="$PM_AUTO_SHIP"
 jq -n \
   --arg name "$PM_NAME" \
   --arg root "$PM_ROOT" \
@@ -147,9 +161,10 @@ jq -n \
   --argjson team "$TEAM_JSON" \
   --argjson keywords "$KEYWORDS_JSON" \
   --argjson collaborators "$PRIOR_COLLAB" \
+  --argjson auto_ship "$PRIOR_AUTOSHIP" \
   --arg session_color "$PM_SESSION_COLOR" \
   --arg created "$CREATED_AT" \
-  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, collaborators:$collaborators, session_color:$session_color, created:$created}' \
+  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, collaborators:$collaborators, auto_ship:$auto_ship, session_color:$session_color, created:$created}' \
   > "$CONFIG_PATH"
 echo "wrote   $CONFIG_PATH"
 

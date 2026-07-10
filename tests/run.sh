@@ -160,7 +160,37 @@ t_sc_collab_degrades() {
   assert_eq "[]" "$(jq -c '.collaborators' "$d/junk/.pm/config.json")" "malformed prior config -> collaborators []"
 }
 
+t_sc_autoship_seed_preserve() {
+  local d="$WORK/sc_autoship"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  # (1) a brand-new scaffold seeds auto_ship false
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq "false" "$(jq -c '.auto_ship' "$cfg")" "new scaffold seeds auto_ship false"
+  # (2) hand-set auto_ship true, re-init the same root, value is preserved
+  local tmp; tmp="$(mktemp)"; jq '.auto_ship=true' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq "true" "$(jq -c '.auto_ship' "$cfg")" "re-init preserves hand-set auto_ship true"
+  # (3) --auto-ship false override wins over the prior true
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" --auto-ship false >/dev/null 2>&1
+  assert_eq "false" "$(jq -c '.auto_ship' "$cfg")" "--auto-ship false overrides prior value"
+}
+
+t_sc_autoship_flag_and_degrades() {
+  # A fresh --auto-ship true sets it; empty/malformed prior config degrades to false.
+  local d="$WORK/sc_autoship_bad"; local fw="$d/fw"
+  mkdir -p "$fw" "$d/on" "$d/empty/.pm" "$d/junk/.pm"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/on" "$SC" --auto-ship true >/dev/null 2>&1
+  assert_eq "true" "$(jq -c '.auto_ship' "$d/on/.pm/config.json")" "--auto-ship true sets flag on fresh scaffold"
+  : > "$d/empty/.pm/config.json"                 # empty file
+  printf 'not json{' > "$d/junk/.pm/config.json" # malformed json
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/empty" "$SC" >/dev/null 2>&1
+  assert_eq "false" "$(jq -c '.auto_ship' "$d/empty/.pm/config.json")" "empty prior config -> auto_ship false"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/junk" "$SC" >/dev/null 2>&1
+  assert_eq "false" "$(jq -c '.auto_ship' "$d/junk/.pm/config.json")" "malformed prior config -> auto_ship false"
+}
+
 t_sc_append; t_sc_update_inplace; t_sc_junk_line; t_sc_collab_seed_preserve; t_sc_collab_degrades
+t_sc_autoship_seed_preserve; t_sc_autoship_flag_and_degrades
 
 # ── config.sh slot resolution ────────────────────────────────────────────────────
 section "config.sh"

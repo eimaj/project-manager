@@ -90,12 +90,17 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 ### Step 3 — Append new meeting pointers — meeting_source slot
 
 - **If the `meeting_source` slot is `none`:** skip (no source to map from).
-- **Else:** map the project's meetings (those matching `MEETING_REF`, or falling back to keyword title match against `KEYWORDS` when `MEETING_REF` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`):
+- **Else:** map the project's meetings (those matching `MEETING_REF`, or falling back to keyword title match against `KEYWORDS` when `MEETING_REF` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`). **The dedupe read and the append run inside one lock** so two concurrent tabs can't both read "id absent" and both append the same pointer:
 
   ```bash
-  EXISTING=$(jq -r '.meeting_id' "$ROOT/meetings.jsonl" 2>/dev/null | sort -u)
-  # for each new id in the archive index NOT already present, append a pointer:
-  #   {"meeting_id":..,"date":..,"title":..,"path":"{{notes_root}}/meetings/<file>"}
+  source "{{framework_root}}/lib/with-lock.sh"
+  append_new_pointers() {
+    EXISTING=$(jq -r '.meeting_id' "$ROOT/meetings.jsonl" 2>/dev/null | sort -u)   # read INSIDE the lock
+    # for each candidate meeting whose meeting_id is NOT in $EXISTING, append one pointer line:
+    #   echo '{"meeting_id":..,"date":..,"title":..,"path":"{{notes_root}}/meetings/<file>"}' >> "$ROOT/meetings.jsonl"
+  }
+  mkdir -p "$ROOT/.pm"
+  with_lock "$ROOT/.pm/.meetings.lock" append_new_pointers
   ```
 
   Never duplicate transcripts — store pointers only. If `MEETING_REF` is blank, note it as a TODO.

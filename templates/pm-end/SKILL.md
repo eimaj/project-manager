@@ -13,7 +13,7 @@ description: End-of-session capture for the active PM project — runs the logge
 **Use when:** wrapping up a work session on the active project — "I'm done", "wrap up", "/pm-end". Captures state so the next `/pm-start` can lead with it.
 **Do NOT use when:** opening the session → `/pm-start`. A quick mid-session recap → `/pm-status`.
 **Inputs expected:** none — resolves the project from the per-session marker.
-**Outputs produced:** backfilled logger entries (the guard, if a logger is configured); a tagged note (if logger/notes support it); an updated `<root>/LAST-SESSION.md` block for this session; and (when the project is in a git repo) a commit of the project folder on this session's own branch `chore/<day>-<slug>-pm-<shortsid>`.
+**Outputs produced:** backfilled logger entries (the guard, if a logger is configured); a tagged note (if logger/notes support it); an updated `<root>/LAST-SESSION.md` block for this session; and (when the project is in a git repo) a commit of the project folder on this session's own branch `chore/<day>-<slug>-pm-<shortsid>` — left local by default, or (when `.pm/config.json` sets `auto_ship: true`) pushed and merged via a PR against the repo's default base branch.
 
 ## Related Skills
 
@@ -84,26 +84,59 @@ EOF
 
 ### Step 6 — Commit the session's changes (optional)
 
-If the project folder is inside a git repo, land the session's work on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` — never push directly to `main`. Each tab commits to a **distinct per-session branch** (keyed by a short, ref-safe form of `$SID`), so concurrent tabs never race on the same ref or index. The helper does all of this: it **stages ONLY the project folder (`$REL/`)**, skips the commit when there are nothing to commit (no empty commit), and — because the working tree is shared across tabs — **captures the branch you were on and restores it afterward** so another tab isn't left checked out on this tab's pm branch. If the project is not in a git repo, it prints a notice and skips. `$SID` and `$NAME` were resolved in Step 1.
+If the project folder is inside a git repo, land the session's work on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` — never push directly to `main`. Each tab commits to a **distinct per-session branch** (keyed by a short, ref-safe form of `$SID`), so concurrent tabs never race on the same ref or index. The helper does all of this: it **stages ONLY the project folder (`$REL/`)**, skips the commit when there is nothing to commit (no empty commit), and — because the working tree is shared across tabs — **captures the branch you were on and restores it afterward** so another tab isn't left checked out on this tab's pm branch. If the project is not in a git repo, it prints a notice and skips. `$SID` and `$NAME` were resolved in Step 1.
+
+**This local commit runs in BOTH modes.** What happens *after* it depends on the per-project `auto_ship` flag in `.pm/config.json` (default `false`).
 
 ```bash
+AUTO_SHIP=$(jq -r '.auto_ship // false' "$ROOT/.pm/config.json")
 BRANCH=$("{{framework_root}}/lib/session-commit.sh" --root "$ROOT" --session "$SID" --name "$NAME")
 ```
 
-Only paths under `$ROOT` are ever staged; unrelated dirty files outside the project folder stay unstaged and travel with the checkout (no stashing). If the commit-message hook rejects the message, fix the message — never bypass hooks.
+Only paths under `$ROOT` are ever staged; unrelated dirty files outside the project folder stay unstaged and travel with the checkout (no stashing). If the commit-message hook rejects the message, fix the message — never bypass hooks (never `--no-verify`).
 
-#### Reconcile session branches (end of day)
+#### Mode A — `auto_ship=false` (default): stop after the local commit
 
-Because each tab produces its own `chore/<day>-<slug>-pm-<shortsid>` branch, reconcile them at end of day into a single branch (or one PR per day) and delete the merged session branches. This is **advisory** — `/pm-end` never auto-merges or auto-pushes (matches the "never push to `main`" rule and the "never bypass hooks" note above).
+The default. Leave the per-session branch local and **do not** push or open a PR. Because each tab produces its own `chore/<day>-<slug>-pm-<shortsid>` branch, reconcile them at end of day into a single branch (or one PR per day) and delete the merged session branches. This is **advisory** — in this mode `/pm-end` never auto-merges or auto-pushes (matches the "never push to `main`" rule and the "never bypass hooks" note above).
 
 ```bash
 DAY=$(date +%Y-%m-%d); SLUG=$(printf '%s' "$NAME" | tr '[:upper:] ' '[:lower:]-')
+REPO=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)
 # List today's per-session pm branches:
 git -C "$REPO" branch --list "chore/$DAY-$SLUG-pm-*"
 # Merge them onto a single day branch, then delete the merged ones:
 git -C "$REPO" checkout -b "chore/$DAY-$SLUG-pm" 2>/dev/null || git -C "$REPO" checkout "chore/$DAY-$SLUG-pm"
 #   ... git merge each session branch ...   (their commit messages already conform)
 #   ... then: git branch -d chore/$DAY-$SLUG-pm-<shortsid>   (the branch-cleanup skill can help)
+```
+
+#### Mode B — `auto_ship=true`: auto-ship the session branch via a PR
+
+Opt-in per project (`"auto_ship": true` in `.pm/config.json`). After the local commit, ship the per-session branch **through the PR workflow** — push the branch, open a PR against the repo's default base branch, then merge it and delete the branch. It **never pushes `main` directly** and **never bypasses hooks**. `session-commit.sh` itself stays pure-git; this ship logic lives here.
+
+Guards (all must hold, else this silently no-ops and Mode A's advisory applies):
+
+- **A commit actually happened** — `session-commit.sh` skips the commit when nothing changed, so ship only if the branch is ahead of the base.
+- **A git remote exists** — no `origin`, nothing to ship.
+- **Never target/push `main`** — only the per-session branch is pushed; `main` is updated solely by the PR merge.
+
+```bash
+if [[ "$AUTO_SHIP" == "true" && -n "$BRANCH" ]]; then
+  REPO=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)
+  # Default base branch (main/master) from origin's HEAD; fall back to main.
+  BASE=$(git -C "$REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+  BASE="${BASE:-main}"
+  if git -C "$REPO" remote get-url origin >/dev/null 2>&1 \
+     && [[ -n "$(git -C "$REPO" rev-list "$BASE..$BRANCH" 2>/dev/null)" ]]; then
+    git -C "$REPO" push -u origin "$BRANCH"                 # push the SESSION branch — never main
+    ( cd "$REPO" && gh pr create --base "$BASE" --head "$BRANCH" \
+        --title "docs(pm): $(printf '%s' "$NAME" | tr '[:upper:] ' '[:lower:]-') session $(date +%Y-%m-%d)" \
+        --body "Automated /pm-end session ship for $NAME." )
+    ( cd "$REPO" && gh pr merge "$BRANCH" --merge --delete-branch )   # merge via PR, delete the branch
+  else
+    echo "auto_ship: nothing to ship (no commit, or no origin remote) — skipping."
+  fi
+fi
 ```
 
 ### Step 7 — Log it — logger slot
@@ -128,6 +161,7 @@ Print this only when the project has a `session_color` configured; skip it other
 - **No JOURNAL.md** — do not create one.
 - **Every slot has an explicit `none` branch** — never fabricate logger/tracker activity for a disabled slot.
 - **Commit (when in a repo) is scoped to the project folder** — stage only paths under `$ROOT`, on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` (never the shared per-day branch); the shared working tree is restored to the branch you were on afterward; never push to `main`, never stage files outside the project folder. Reconcile the per-session branches at end of day (see Step 6).
+- **`auto_ship` (per-project, `.pm/config.json`, default `false`)** — when `false`, the session branch stays local and you reconcile at EOD (Mode A). When `true`, `/pm-end` auto-ships the branch via the PR workflow (push branch → `gh pr create` → `gh pr merge --merge --delete-branch`), only when a commit was actually made and a remote exists — never a direct push to `main`, never `--no-verify` (Mode B).
 
 ## Signal Keywords
 <!-- Comma-separated terms the skills collector uses to attribute learnings to this skill -->

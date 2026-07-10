@@ -28,6 +28,7 @@ description: Cache-only PM briefing for the active session's project — reads e
 - **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
 - **Cache-only:** this skill reads existing files. It performs **NO** live meeting, tracker, or email sync — that is `/pm-start`'s job.
+- **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
 
 ## Steps
 

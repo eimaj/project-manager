@@ -137,7 +137,7 @@ mkdir -p "$NOTES_ROOT/meetings"
 
 ```bash
 mkdir -p "$FRAMEWORK_ROOT/lib" "$FRAMEWORK_ROOT/sessions"
-for f in session.sh scaffold.sh handoff-write.sh config.sh; do
+for f in session.sh with-lock.sh scaffold.sh handoff-write.sh config.sh session-commit.sh; do
   install -m 0755 "$REPO/lib/$f" "$FRAMEWORK_ROOT/lib/$f"
 done
 [[ -f "$FRAMEWORK_ROOT/registry.jsonl" ]] || : > "$FRAMEWORK_ROOT/registry.jsonl"

@@ -42,6 +42,13 @@ done
 
 FILE="$ROOT/LAST-SESSION.md"
 BODY="$(cat)"                          # block body from stdin
+# Invariant: body content can NEVER be mistaken for a structural marker. A body line
+# that is itself a full-line PM:SESSION START/END marker would otherwise be read as a
+# block boundary on the next rewrite and corrupt the file. Neutralize it losslessly by
+# breaking the PM:SESSION token with an HTML entity for the colon — it still renders
+# identically (the line is an HTML comment either way) but no longer matches the
+# structural pattern the awk pass anchors on.
+BODY="$(printf '%s' "$BODY" | sed -E 's/^(<!-- )PM:SESSION( .* (START|END) -->)$/\1PM\&#58;SESSION\2/')"
 TS="$(date '+%Y-%m-%d %H:%M')"
 START="<!-- PM:SESSION ${SID} START -->"
 END="<!-- PM:SESSION ${SID} END -->"
@@ -74,6 +81,10 @@ fi
 TMP="$(mktemp)"
 awk -v s="$START" -v e="$END" '
   # Drop only THIS session block (between its START and END), then re-append below.
+  # Structural markers are matched as FULL LINES only (anchored ^...$); a marker-looking
+  # string embedded mid-line is body content, never a boundary. Body lines that would
+  # otherwise be full-line markers are neutralized before write (see BODY sed above), so
+  # this pass can only ever key on real structural markers.
   # Safety against a malformed file: while skipping, ANY other session boundary
   # marker (a PM:SESSION ... START/END line that is not our own END) also ends the
   # skip and is itself printed. So a START whose matching END was lost can drop at
@@ -81,7 +92,7 @@ awk -v s="$START" -v e="$END" '
   # silently truncate the rest of the file.
   $0==s { skip=1; next }
   skip && $0==e { skip=0; next }
-  skip && /<!-- PM:SESSION .* (START|END) -->/ { skip=0; print; next }
+  skip && /^<!-- PM:SESSION .* (START|END) -->$/ { skip=0; print; next }
   !skip { print }
 ' "$FILE" > "$TMP"
 printf '\n%s\n## Session %s — %s\n\n%s\n%s\n' "$START" "$SID" "$TS" "$BODY" "$END" >> "$TMP"

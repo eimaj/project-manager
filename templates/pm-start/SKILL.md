@@ -37,7 +37,7 @@ description: Open a PM-framework project for the session — sets the per-sessio
 ### Step 1 — Resolve the project and write the session marker
 
 ```bash
-SID=$({{framework_root}}/lib/session.sh)        # robust session id ($CLAUDE_SESSION_ID may be unset in the shell)
+SID=$("{{framework_root}}/lib/session.sh")        # robust session id ($CLAUDE_SESSION_ID may be unset in the shell)
 MARKER="{{framework_root}}/sessions/$SID"
 # If the user passed @<path>, that path is the project root. Else read existing marker:
 ROOT="<resolved @path>"                          # or: ROOT="$(cat "$MARKER" 2>/dev/null)"

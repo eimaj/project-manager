@@ -34,7 +34,7 @@ description: Cache-only PM briefing for the active session's project — reads e
 ### Step 1 — Resolve the project from the marker
 
 ```bash
-SID=$({{framework_root}}/lib/session.sh)        # same resolver pm-start used to write the marker
+SID=$("{{framework_root}}/lib/session.sh")        # same resolver pm-start used to write the marker
 ROOT="$(cat "{{framework_root}}/sessions/$SID" 2>/dev/null)"
 test -f "$ROOT/.pm/config.json" || { echo "No active PM project this session — run /pm-start @<path> first."; exit 1; }
 NOTES_REF=$(jq -r '.notes_ref // ""' "$ROOT/.pm/config.json")

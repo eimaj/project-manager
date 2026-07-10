@@ -172,13 +172,17 @@ render_skill() {
   fi
 
   mkdir -p "$dst_dir"
+  # Escape a value for use as the replacement in a '#'-delimited sed s-command:
+  # a literal '#' would end the command early and a literal '&' would expand to the
+  # matched text, so backslash-escape '\', '&', and '#' before substituting.
+  esc() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
   sed \
-    -e "s#{{meeting_source}}#${SLOT_MEETING:-none}#g" \
-    -e "s#{{tracker}}#${SLOT_TRACKER:-none}#g" \
-    -e "s#{{logger}}#${SLOT_LOGGER:-none}#g" \
-    -e "s#{{email}}#${SLOT_EMAIL:-none}#g" \
-    -e "s#{{notes_root}}#${NOTES_ROOT}#g" \
-    -e "s#{{framework_root}}#${FRAMEWORK_ROOT}#g" \
+    -e "s#{{meeting_source}}#$(esc "${SLOT_MEETING:-none}")#g" \
+    -e "s#{{tracker}}#$(esc "${SLOT_TRACKER:-none}")#g" \
+    -e "s#{{logger}}#$(esc "${SLOT_LOGGER:-none}")#g" \
+    -e "s#{{email}}#$(esc "${SLOT_EMAIL:-none}")#g" \
+    -e "s#{{notes_root}}#$(esc "${NOTES_ROOT}")#g" \
+    -e "s#{{framework_root}}#$(esc "${FRAMEWORK_ROOT}")#g" \
     "$src" > "$dst"
   echo "rendered $dst"
 }

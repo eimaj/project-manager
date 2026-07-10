@@ -51,7 +51,7 @@ description: One-time scaffolder for a long-running project under the PM framewo
 2. **Run the scaffolder.** Pass answers as flags (non-interactive) so nothing is mis-prompted:
 
    ```bash
-   {{framework_root}}/lib/scaffold.sh \
+   "{{framework_root}}/lib/scaffold.sh" \
      --name "<name>" \
      --root "<absolute root>" \
      --tracker-ref "<tracker project or blank>" \

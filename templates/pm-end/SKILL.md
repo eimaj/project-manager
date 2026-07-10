@@ -34,7 +34,7 @@ description: End-of-session capture for the active PM project — runs the logge
 ### Step 1 — Resolve the project from the marker
 
 ```bash
-SID=$({{framework_root}}/lib/session.sh)        # same resolver pm-start used to write the marker
+SID=$("{{framework_root}}/lib/session.sh")        # same resolver pm-start used to write the marker
 ROOT="$(cat "{{framework_root}}/sessions/$SID" 2>/dev/null)"
 test -f "$ROOT/.pm/config.json" || { echo "No active PM project this session — run /pm-start @<path> first."; exit 1; }
 NAME=$(jq -r '.name' "$ROOT/.pm/config.json")
@@ -66,7 +66,7 @@ KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 Pipe the block body in on stdin (the helper adds the `## Session <id> — <timestamp>` heading, so use `###` subsections in the body):
 
 ```bash
-{{framework_root}}/lib/handoff-write.sh --root "$ROOT" --session "$SID" --name "$NAME" << 'EOF'
+"{{framework_root}}/lib/handoff-write.sh" --root "$ROOT" --session "$SID" --name "$NAME" << 'EOF'
 ### Current state
 - <where things stand now>
 

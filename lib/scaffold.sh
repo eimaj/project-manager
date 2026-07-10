@@ -33,7 +33,8 @@
 # Behavior:
 #   - Writes <root>/.pm/config.json, CONTEXT.md, CALENDAR.md, meetings.jsonl.
 #   - Never clobbers an existing CONTEXT.md / CALENDAR.md / meetings.jsonl (re-init safe).
-#   - config.json is always rewritten (it is the canonical config).
+#   - config.json is merged, not replaced: managed fields update from inputs while any
+#     unknown/extra fields in an existing config (and its `created`) are preserved.
 #   - Registry is deduped by root: existing root → updated in place; new root → appended.
 #
 # Guards honored: no rm -rf, no commit/push. Only writes under <root> and the registry.
@@ -140,18 +141,19 @@ KEYWORDS_JSON="$(csv_to_json_array "$PM_KEYWORDS")"
 # ---- write .pm/config.json (canonical; always rewritten) ----------------------
 mkdir -p "$PM_ROOT/.pm"
 CONFIG_PATH="$PM_ROOT/.pm/config.json"
-# Preserve the hand-maintained collaborators array across re-init (config.json is
-# fully rewritten below). Absent or unparseable prior config -> default to [].
-PRIOR_COLLAB=$(jq -c '.collaborators // []' "$CONFIG_PATH" 2>/dev/null || echo '[]')
-# An empty file makes jq exit 0 with no output; normalize that (and any blank) to [].
-[[ -n "$PRIOR_COLLAB" ]] || PRIOR_COLLAB='[]'
-# Preserve the per-project auto_ship flag across re-init (config.json is fully rewritten).
-# Absent or unparseable prior config -> default false. An explicit --auto-ship/PM_AUTO_SHIP
-# override (validated above) wins over the prior value.
-PRIOR_AUTOSHIP=$(jq -r '.auto_ship // false' "$CONFIG_PATH" 2>/dev/null || echo false)
-[[ "$PRIOR_AUTOSHIP" == "true" || "$PRIOR_AUTOSHIP" == "false" ]] || PRIOR_AUTOSHIP=false
-[[ -n "$PM_AUTO_SHIP" ]] && PRIOR_AUTOSHIP="$PM_AUTO_SHIP"
+# Read the existing config so re-init is non-destructive: scaffold MERGES the fields it
+# manages onto the prior object, so any unknown/extra fields (e.g. linear_project,
+# granola_folder, crrt_tag) survive verbatim. Absent, empty, or unparseable prior config
+# -> treat as {} (a brand-new project). An empty file makes jq exit 0 with no output;
+# normalize that (and any blank) to {}.
+PRIOR=$(jq -c . "$CONFIG_PATH" 2>/dev/null || echo '{}')
+[[ -n "$PRIOR" ]] || PRIOR='{}'
+# Deep-merge prior * managed: managed fields win, but a blank input never clobbers a prior
+# non-empty value (keep/keeparr). collaborators seed [] / auto_ship seed false for a brand-new
+# config; a validated --auto-ship/PM_AUTO_SHIP override wins over the prior flag. created is
+# preserved from the prior config (fresh only when there is no prior).
 jq -n \
+  --argjson prior "$PRIOR" \
   --arg name "$PM_NAME" \
   --arg root "$PM_ROOT" \
   --arg tracker "$PM_TRACKER_REF" \
@@ -160,11 +162,27 @@ jq -n \
   --arg notes "$PM_NOTES_REF" \
   --argjson team "$TEAM_JSON" \
   --argjson keywords "$KEYWORDS_JSON" \
-  --argjson collaborators "$PRIOR_COLLAB" \
-  --argjson auto_ship "$PRIOR_AUTOSHIP" \
   --arg session_color "$PM_SESSION_COLOR" \
+  --arg auto_ship_override "$PM_AUTO_SHIP" \
   --arg created "$CREATED_AT" \
-  '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, team:$team, keywords:$keywords, collaborators:$collaborators, auto_ship:$auto_ship, session_color:$session_color, created:$created}' \
+  '
+  # keep the prior value when the new input is blank and the prior has one.
+  def keep(new; old):    if new != "" then new else (old // new) end;
+  def keeparr(new; old): if (new | length) > 0 then new else (old // new) end;
+  $prior * {
+    name:          $name,
+    root:          $root,
+    tracker_ref:   keep($tracker; $prior.tracker_ref),
+    meeting_ref:   keep($meeting; $prior.meeting_ref),
+    email_ref:     keep($email; $prior.email_ref),
+    notes_ref:     keep($notes; $prior.notes_ref),
+    team:          keeparr($team; $prior.team),
+    keywords:      keeparr($keywords; $prior.keywords),
+    collaborators: ($prior.collaborators // []),
+    auto_ship:     (if $auto_ship_override == "" then ($prior.auto_ship // false) else ($auto_ship_override == "true") end),
+    session_color: keep($session_color; $prior.session_color),
+    created:       ($prior.created // $created)
+  }' \
   > "$CONFIG_PATH"
 echo "wrote   $CONFIG_PATH"
 

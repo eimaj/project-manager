@@ -38,7 +38,25 @@ description: Open a PM-framework project for the session — sets the per-sessio
 ### Step 1 — Resolve the project and write the session marker
 
 ```bash
-SID=$("{{framework_root}}/lib/session.sh")        # robust session id ($CLAUDE_SESSION_ID may be unset in the shell)
+# Source the resolver so the mint write below reuses its EXACT anchor derivation (no drift).
+. "{{framework_root}}/lib/session.sh"
+SID="$(pm_session_id)"                            # prefers CLAUDE_CODE_SESSION_ID (a real UUID)
+
+# Mint fallback: only when SID is a WEAK id (no harness session var was set). A weak id is
+# tty-… or shell-…; a real harness id is a UUID and must be used verbatim (do NOT mint).
+if [[ "$SID" =~ ^shell- || "$SID" =~ ^tty- ]]; then
+  ANCHOR="$(pm_session_anchor)"                   # same anchor session.sh's mint lookup reads
+  MINT_DIR="{{framework_root}}/sessions/.mint"
+  MINT_FILE="$MINT_DIR/$ANCHOR"
+  if [[ -r "$MINT_FILE" ]]; then
+    SID="$(cat "$MINT_FILE")"                     # rediscover a sibling's earlier mint
+  else
+    SID="$(uuidgen | tr '[:upper:]' '[:lower:]')" # mint a fresh UUID, lowercase
+    mkdir -p "$MINT_DIR"
+    printf '%s\n' "$SID" > "$MINT_FILE"           # persist so session.sh + siblings agree
+  fi
+fi
+
 MARKER="{{framework_root}}/sessions/$SID"
 # If the user passed @<path>, that path is the project root. Else read existing marker:
 ROOT="<resolved @path>"                          # or: ROOT="$(cat "$MARKER" 2>/dev/null)"
@@ -46,6 +64,8 @@ test -f "$ROOT/.pm/config.json" || { echo "Not a PM project (run /pm-init): $ROO
 mkdir -p "{{framework_root}}/sessions"
 printf '%s\n' "$ROOT" > "$MARKER"
 ```
+
+> **Why mint?** `session.sh` is a pure reader — with no harness session var (`CLAUDE_CODE_SESSION_ID` / `CLAUDE_SESSION_ID` / `PM_SESSION_PID` / `TERM_SESSION_ID`) it can only return a weak `tty-…`/`shell-$PPID` id, which collapses distinct sessions together. pm-start (the one skill that owns session-marker creation) mints a stable UUID once and persists it keyed by the shell's anchor (`{{framework_root}}/sessions/.mint/<anchor>`). Every later `session.sh` call in the same shell rediscovers it via its read-only mint lookup, so `/pm-status` and `/pm-end` resolve the identical id. When a real harness UUID is present, it is used directly and nothing is minted.
 
 Load config into shell vars for later steps:
 
@@ -70,12 +90,17 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 ### Step 3 — Append new meeting pointers — meeting_source slot
 
 - **If the `meeting_source` slot is `none`:** skip (no source to map from).
-- **Else:** map the project's meetings (those matching `MEETING_REF`, or falling back to keyword title match against `KEYWORDS` when `MEETING_REF` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`):
+- **Else:** map the project's meetings (those matching `MEETING_REF`, or falling back to keyword title match against `KEYWORDS` when `MEETING_REF` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`). **The dedupe read and the append run inside one lock** so two concurrent tabs can't both read "id absent" and both append the same pointer:
 
   ```bash
-  EXISTING=$(jq -r '.meeting_id' "$ROOT/meetings.jsonl" 2>/dev/null | sort -u)
-  # for each new id in the archive index NOT already present, append a pointer:
-  #   {"meeting_id":..,"date":..,"title":..,"path":"{{notes_root}}/meetings/<file>"}
+  source "{{framework_root}}/lib/with-lock.sh"
+  append_new_pointers() {
+    EXISTING=$(jq -r '.meeting_id' "$ROOT/meetings.jsonl" 2>/dev/null | sort -u)   # read INSIDE the lock
+    # for each candidate meeting whose meeting_id is NOT in $EXISTING, append one pointer line:
+    #   echo '{"meeting_id":..,"date":..,"title":..,"path":"{{notes_root}}/meetings/<file>"}' >> "$ROOT/meetings.jsonl"
+  }
+  mkdir -p "$ROOT/.pm"
+  with_lock "$ROOT/.pm/.meetings.lock" append_new_pointers
   ```
 
   Never duplicate transcripts — store pointers only. If `MEETING_REF` is blank, note it as a TODO.
@@ -88,11 +113,18 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 ### Step 4 — Regenerate CALENDAR.md — tracker slot
 
 - **If the `tracker` slot is `none`:** **skip the live due-date pull.** Leave the Synced section as `_(tracker slot is none — no due dates synced)_` and **preserve everything below the `<!-- PM:MANUAL -->` marker verbatim.** Say so in the briefing.
-- **Else:** pull forward-looking due dates for `TRACKER_REF` from **{{tracker}}**, rewrite the **Synced** section above the marker, and **preserve everything below it verbatim** (hand-added dated items). Sort synced entries by date. If `TRACKER_REF` is blank, leave Synced as `_(no tracker project configured — TODO)_` and still preserve Manual.
+- **Else:** pull forward-looking due dates for `TRACKER_REF` from **{{tracker}}**, rewrite the **Synced** section above the marker, and **preserve everything below it verbatim** (hand-added dated items). Sort synced entries by date. If `TRACKER_REF` is blank, leave Synced as `_(no tracker project configured — TODO)_` and still preserve Manual. **Run the read-modify-write under a lock** so concurrent tabs can't clobber each other's regeneration; write to a temp file and atomic-`mv` into place so a reader never sees a half-rewritten file:
 
   ```bash
-  MARKER='<!-- PM:MANUAL'
-  # preserved="$(sed -n "/$MARKER/,\$p" "$ROOT/CALENDAR.md")"   # marker line onward, kept as-is
+  source "{{framework_root}}/lib/with-lock.sh"
+  regen_calendar() {
+    MARKER='<!-- PM:MANUAL'
+    # preserved="$(sed -n "/$MARKER/,\$p" "$ROOT/CALENDAR.md")"   # marker line onward, kept verbatim
+    # rebuild the Synced section above the marker, re-emit "$preserved" unchanged below it,
+    # then atomic-mv the temp file over "$ROOT/CALENDAR.md".
+  }
+  mkdir -p "$ROOT/.pm"
+  with_lock "$ROOT/.pm/.calendar.lock" regen_calendar
   ```
 
 ### Step 5 — Read handoff + open work
@@ -145,6 +177,7 @@ Print these sections in order (omit a source's section when its slot is `none`, 
 ## Rules
 
 - **This is the LIVE-sync entry point.** `/pm-status` is cache-only; do not duplicate live sync there.
+- **Session id: prefer the harness UUID, mint only as a fallback.** When `session.sh` returns a real UUID (from `CLAUDE_CODE_SESSION_ID` etc.), use it verbatim — never mint. Only when it returns a WEAK id (`tty-…`/`shell-…`) does pm-start mint a UUID and persist it to `{{framework_root}}/sessions/.mint/<anchor>`; this is the ONLY skill that writes the mint file. `session.sh` (used by `/pm-status` and `/pm-end`) only ever READS it, so all three resolve the same id.
 - **Meeting catch-up runs inline** — never delegate the meeting fetch to a subagent (MCP can fail silently there).
 - **Every slot has an explicit `none` branch** — when a slot is `none`, skip its sync and say so in the briefing. Never fabricate data for a disabled slot.
 - **CALENDAR regeneration preserves manual entries** below the `<!-- PM:MANUAL -->` marker. Never drop them.

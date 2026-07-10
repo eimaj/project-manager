@@ -235,6 +235,213 @@ t_install_dryrun() {
 
 t_install_idempotent; t_install_dryrun
 
+# ── session.sh id resolution + mint ──────────────────────────────────────────────
+section "session.sh"
+
+SS="$REPO/lib/session.sh"
+# Run the resolver with a clean env: strip every harness session var so tests are
+# deterministic regardless of the shell the runner itself was launched in.
+sess() { env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u PM_SESSION_PID -u TERM_SESSION_ID "$@" bash "$SS"; }
+
+t_sess_ccsid() {
+  assert_eq "X" "$(sess CLAUDE_CODE_SESSION_ID=X)" "CLAUDE_CODE_SESSION_ID echoed verbatim"
+}
+
+t_sess_stable() {
+  local a b
+  a="$(sess CLAUDE_CODE_SESSION_ID=stable-1)"
+  b="$(sess CLAUDE_CODE_SESSION_ID=stable-1)"
+  assert_eq "$a" "$b" "stable across two calls with the var set"
+}
+
+t_sess_precedence() {
+  assert_eq "win" "$(sess CLAUDE_CODE_SESSION_ID=win CLAUDE_SESSION_ID=lose)" \
+    "CLAUDE_CODE_SESSION_ID precedes CLAUDE_SESSION_ID"
+}
+
+t_sess_mint_path() {
+  # All session env vars unset → drive the mint path. Simulate pm-start's mint write,
+  # then confirm session.sh's read-only mint lookup returns the SAME uuid next call.
+  local d="$WORK/sess_mint"; mkdir -p "$d/sessions/.mint"
+  local anchor="tty-fixedA" uuid="11111111-2222-3333-4444-555555555555"
+  local first
+  first="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="$anchor")"
+  if [[ "$first" == tty-* || "$first" == shell-* ]]; then pass "no mint file -> weak id"
+  else fail "no mint file -> weak id" "got=[$first]"; fi
+  printf '%s\n' "$uuid" > "$d/sessions/.mint/$anchor"   # pm-start mint write (simulated)
+  local second
+  second="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="$anchor")"
+  assert_eq "$uuid" "$second" "mint lookup returns persisted uuid for same anchor"
+}
+
+t_sess_mint_distinct_anchors() {
+  # Two distinct anchors → two distinct minted ids (sessions never collapse together).
+  local d="$WORK/sess_mint2"; mkdir -p "$d/sessions/.mint"
+  printf 'uuid-aaa\n' > "$d/sessions/.mint/tty-A"
+  printf 'uuid-bbb\n' > "$d/sessions/.mint/tty-B"
+  local a b
+  a="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="tty-A")"
+  b="$(sess PM_FRAMEWORK_ROOT="$d" PM_SESSION_ANCHOR="tty-B")"
+  assert_eq "uuid-aaa" "$a" "anchor A resolves its own mint"
+  assert_eq "uuid-bbb" "$b" "anchor B resolves its own mint"
+  if [[ "$a" != "$b" ]]; then pass "distinct anchors -> distinct ids"
+  else fail "distinct anchors -> distinct ids" "both=[$a]"; fi
+}
+
+t_sess_ccsid; t_sess_stable; t_sess_precedence; t_sess_mint_path; t_sess_mint_distinct_anchors
+
+# ── with-lock.sh shared lock helper ───────────────────────────────────────────────
+section "with-lock.sh"
+
+WL="$REPO/lib/with-lock.sh"
+
+t_wl_mutual_exclusion() {
+  # 20 concurrent writers each do read->+1->write on a shared counter under the lock.
+  # Without mutual exclusion this read-modify-write loses updates; with it, final == 20.
+  local d="$WORK/wl_mutex"; mkdir -p "$d"
+  local counter="$d/counter" lock="$d/.c.lock" i
+  echo 0 > "$counter"
+  for ((i=0; i<20; i++)); do
+    ( source "$WL"
+      with_lock "$lock" bash -c 'n=$(cat "'"$counter"'"); echo $((n+1)) > "'"$counter"'"' ) &
+  done
+  wait
+  assert_eq 20 "$(cat "$counter")" "mutual exclusion: 20 concurrent writers, no lost update"
+  assert_eq "no" "$([[ -d "$lock" ]] && echo yes || echo no)" "mutual exclusion: lock released after each run"
+}
+
+t_wl_stale_break() {
+  # A pre-existing lock older than PM_LOCK_STALE_AFTER is broken; acquisition succeeds
+  # and the command runs. Force staleness with PM_LOCK_STALE_AFTER=0.
+  local d="$WORK/wl_stale"; mkdir -p "$d"
+  local lock="$d/.s.lock" out="$d/out" err="$d/err"
+  mkdir "$lock"                                   # simulate a lock left by a crashed run
+  ( source "$WL"; PM_LOCK_STALE_AFTER=0 with_lock "$lock" bash -c 'echo ran > "'"$out"'"' ) 2>"$err"
+  assert_file_contains "$out" "ran" "stale-break: command ran after breaking stale lock"
+  assert_file_contains "$err" "breaking stale lock" "stale-break: prints the stale-break notice"
+  assert_eq "no" "$([[ -d "$lock" ]] && echo yes || echo no)" "stale-break: lock released after run"
+}
+
+t_wl_fail_loud() {
+  # Lock held by a live background process; short retry + non-stale => with_lock must
+  # FAIL LOUD (non-zero) and NOT run the command.
+  local d="$WORK/wl_fail"; mkdir -p "$d"
+  local lock="$d/.f.lock" sentinel="$d/sentinel" rc
+  mkdir "$lock"                                   # held, fresh (not stale)
+  ( source "$WL"
+    # High stale threshold so it can't break the lock; short-lived retry (~5s) then give up.
+    PM_LOCK_STALE_AFTER=9999 with_lock "$lock" bash -c 'echo ran > "'"$sentinel"'"' ) >/dev/null 2>&1
+  rc=$?
+  assert_eq 1 "$rc" "fail-loud: returns non-zero when it cannot acquire or break"
+  assert_eq "no" "$([[ -f "$sentinel" ]] && echo yes || echo no)" "fail-loud: command did NOT run"
+  rmdir "$lock" 2>/dev/null || true
+}
+
+t_wl_meetings_dedupe() {
+  # pm-start Step 3 semantics: read existing ids + append only new ones, all INSIDE the
+  # lock. Two sequential locked appends of the same meeting_id yield exactly one line.
+  local d="$WORK/wl_dedupe"; mkdir -p "$d/.pm"
+  local jsonl="$d/meetings.jsonl" lock="$d/.pm/.meetings.lock"
+  : > "$jsonl"
+  append_pointer() {  # append_pointer <meeting_id>
+    local id="$1"
+    source "$WL"
+    with_lock "$lock" bash -c '
+      id="'"$id"'"; f="'"$jsonl"'"
+      existing=$(jq -r ".meeting_id" "$f" 2>/dev/null | sort -u)   # read INSIDE lock
+      if ! grep -qxF "$id" <<<"$existing"; then
+        jq -nc --arg id "$id" "{meeting_id:\$id,date:\"d\",title:\"t\",path:\"p\"}" >> "$f"
+      fi
+    '
+  }
+  append_pointer m1
+  append_pointer m1                               # duplicate id -> must NOT append again
+  assert_eq 1 "$(count_lines . "$jsonl")" "meetings dedupe: same id appended once"
+  append_pointer m2                               # new id -> appends
+  assert_eq 2 "$(count_lines . "$jsonl")" "meetings dedupe: new id appends"
+}
+
+t_wl_mutual_exclusion; t_wl_stale_break; t_wl_fail_loud; t_wl_meetings_dedupe
+
+# ── session-commit.sh per-session commit branch ───────────────────────────────────
+section "session-commit.sh"
+
+SCM="$REPO/lib/session-commit.sh"
+
+# Init a throwaway git repo (under $WORK, cleaned on exit) with a project subfolder "pa"
+# and one seed commit so there is a branch to restore to. All git ops target this nested
+# repo via -C, never the surrounding pm repo.
+scm_mk_repo() {  # scm_mk_repo <repo_dir>
+  local repo="$1"
+  git init -q "$repo"
+  git -C "$repo" config user.email t@example.com
+  git -C "$repo" config user.name  Tester
+  git -C "$repo" config commit.gpgsign false
+  mkdir -p "$repo/pa/.pm"
+  echo seed > "$repo/pa/seed.txt"
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "chore: seed"
+}
+
+t_scm_shortsid() {
+  # Pure sanitizer (sourced, no git): [a-z0-9-], collapsed, trimmed, <=12, ref-safe.
+  ( source "$SCM"
+    assert_eq "a-b-c"   "$(session_shortsid 'a/b c')"  "shortsid: slashes+spaces -> single hyphens"
+    assert_eq "abc-def" "$(session_shortsid 'ABC_def')" "shortsid: lowercased, non-alnum -> hyphen"
+    local long; long="$(session_shortsid '11111111-2222-3333-4444-555555555555')"
+    assert_eq 12 "${#long}" "shortsid: capped at 12 chars"
+    local weird; weird="$(session_shortsid '///   ///')"
+    if [[ -n "$weird" && "$weird" =~ ^[a-z0-9-]+$ ]]; then pass "shortsid: all-symbol sid -> non-empty ref-safe"
+    else fail "shortsid: all-symbol sid -> non-empty ref-safe" "got=[$weird]"; fi )
+}
+
+t_scm_distinct_branches() {
+  # Two distinct sids -> two distinct branches, each with exactly one commit touching
+  # only the project folder; the original branch is restored after each run.
+  local d="$WORK/scm_distinct"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  echo a1 > "$repo/pa/a.txt"
+  local ba; ba="$("$SCM" --root "$repo/pa" --session "sid-AAA" --name "Demo Proj")"
+  echo b1 > "$repo/pa/b.txt"
+  local bb; bb="$("$SCM" --root "$repo/pa" --session "sid-BBB" --name "Demo Proj")"
+  if [[ "$ba" != "$bb" ]]; then pass "distinct sids -> distinct branches"
+  else fail "distinct sids -> distinct branches" "both=[$ba]"; fi
+  assert_contains "$ba" "-pm-sid-aaa" "branch A carries session suffix"
+  assert_contains "$bb" "-pm-sid-bbb" "branch B carries session suffix"
+  assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$ba")" "branch A: exactly one new commit"
+  assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$bb")" "branch B: exactly one new commit"
+  assert_eq "pa/a.txt" "$(git -C "$repo" show --name-only --format= "$ba")" "branch A commit touches only project folder"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "original branch restored after commits"
+}
+
+t_scm_weird_sid_valid_ref() {
+  # A weird sid must still yield a branch git accepts as a valid ref.
+  local d="$WORK/scm_weird"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  echo x > "$repo/pa/x.txt"
+  local br; br="$("$SCM" --root "$repo/pa" --session 'a/b c' --name "Demo Proj")"
+  assert_contains "$br" "-pm-a-b-c" "weird sid sanitized into ref-safe suffix"
+  if git check-ref-format "refs/heads/$br"; then pass "weird sid -> valid ref name"
+  else fail "weird sid -> valid ref name" "invalid=[$br]"; fi
+}
+
+t_scm_no_empty_commit() {
+  # No changes under the project folder -> no commit; original branch restored.
+  local d="$WORK/scm_empty"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  local br; br="$("$SCM" --root "$repo/pa" --session "sid-C" --name "Demo Proj")"
+  assert_eq 0 "$(git -C "$repo" rev-list --count "$base..$br")" "no changes -> no empty commit"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "no-change: original branch restored"
+}
+
+if command -v git >/dev/null 2>&1; then
+  t_scm_shortsid; t_scm_distinct_branches; t_scm_weird_sid_valid_ref; t_scm_no_empty_commit
+else
+  echo "  skip git not available — session-commit.sh integration tests skipped"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────────
 printf '\n──────────────────────────────\n'
 printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"

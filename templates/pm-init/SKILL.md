@@ -62,6 +62,7 @@ name automatically.
 3. **Team members** (context only; not used for filtering) — optional.
 4. **Keywords / aliases** (for `tool:logs` search + fallback meeting/email match) — optional.
 5. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
+6. **Auto-ship on `/pm-end`?** — optional, **default `false`**. When `true`, `/pm-end` ships each session's commit through the PR workflow (push branch → `gh pr create` → `gh pr merge --delete-branch`) instead of leaving it local for end-of-day reconciliation. Leave blank (or `false`) to keep the safe default; only set `true` for a project you want auto-merged per session.
 
 ## The `collaborators` field (hand-maintained)
 
@@ -105,7 +106,8 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
      --tool-ref "github=<owner/repo or omit>" \
      --team "<comma,separated or blank>" \
      --keywords "<comma,separated or blank>" \
-     --session-color "<red|blue|green|yellow|purple|orange|pink|cyan|default or blank>"
+     --session-color "<red|blue|green|yellow|purple|orange|pink|cyan|default or blank>" \
+     --auto-ship "<true|false — blank keeps the default false>"
    ```
 
    The `--tool-ref` names must match the registry's tool names (use whatever `pm_tools` reported, not necessarily the defaults shown). The script writes `.pm/config.json` (always) with a `tool_refs` map, seeds `CONTEXT.md` / `CALENDAR.md` / `meetings.jsonl` **only if missing** (re-init never clobbers content), and upserts the registry by `root`.

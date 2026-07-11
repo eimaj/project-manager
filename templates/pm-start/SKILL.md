@@ -39,7 +39,7 @@ time, adjust the `tool:<name>` references below to match.
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root path, where `<session-id>` comes from `{{framework_root}}/lib/session.sh`. **This skill writes it.** Concurrent sessions each hold their own.
 - **Named tools, resolved at runtime.** `lib/config.sh` (`pm_load_config`) exposes the tool registry; each step branches on `pm_tool_defined <name>` and degrades with a note when a tool is undefined. Per-project scoping for a tool lives in `.pm/config.json` → `.tool_refs.<name>` (how THIS project is identified inside that tool's backend). For Jamie's setup the default providers are `meetings`→granola, `calendar`→ms365-calendar, `email`→ms365-outlook, `tasks`→linear, `github`→gh, `todo`→crrt, `logs`→clog.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
-- **Meetings = pointers, not copies.** The meeting archive lives under `pm_tool_root meetings` (Jamie: `~/Code/logs/meetings`). The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
+- **Meetings = pointers, not copies.** The meeting archive lives under `pm_tool_root_or_notes meetings` (Jamie: `~/Code/logs/meetings`; falls back to `$PM_NOTES_ROOT` when the `meetings` tool has no explicit `root`). The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) this skill renders as a quick-reference (Step 6). A local lookup index read from config — no live/MCP call at read time. Absent/empty = TODO.
 
 ## Steps
@@ -102,7 +102,7 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 ### Step 2 — Meeting catch-up (LIVE) — `tool:meetings`
 
 - **If `pm_tool_defined meetings` is false:** skip meeting catch-up entirely. Print: "tool:meetings not defined — skipping meeting catch-up (run /granola-import by hand)." Do not attempt any meeting fetch.
-- **Else:** run the catch-up **inline in the main session** — MCP-backed meeting tools can fail silently inside subagents. For Jamie's provider (`granola`), invoke [`granola-import`](../granola-import/SKILL.md) (default no-args catch-up); this imports new meetings into the archive at `pm_tool_root meetings` (transcripts + an `import-log.jsonl` index).
+- **Else:** run the catch-up **inline in the main session** — MCP-backed meeting tools can fail silently inside subagents. For Jamie's provider (`granola`), invoke [`granola-import`](../granola-import/SKILL.md) (default no-args catch-up); this imports new meetings into the archive at `pm_tool_root_or_notes meetings` (transcripts + an `import-log.jsonl` index).
   - _related: run `pm_tool_skills meetings` (e.g. /granola-import, /meeting-summarize, /pa-meeting-catchup) — surface these as discovery hints; never auto-invoke._
 
 ### Step 3 — Append new meeting pointers — `tool:meetings`

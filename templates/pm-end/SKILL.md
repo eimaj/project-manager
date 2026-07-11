@@ -1,6 +1,6 @@
 ---
 name: pm-end
-description: End-of-session capture for the active PM project — runs the logger hygiene guard first (when a logger is configured), summarizes the session, writes a tagged note, and updates this session's block in LAST-SESSION.md (current state / open threads / next-up / blockers) without clobbering other sessions' blocks. Use when wrapping up work on a project, "/pm-end", or "I'm done for now".
+description: End-of-session capture for the active PM project — runs the logs-sweep + todo-hygiene guard first (each half guarded by its own tool), summarizes the session, writes a tagged note, and updates this session's block in LAST-SESSION.md (current state / open threads / next-up / blockers) without clobbering other sessions' blocks. Use when wrapping up work on a project, "/pm-end", or "I'm done for now".
 ---
 
 # pm-end — Capture & Hand Off (EOD)

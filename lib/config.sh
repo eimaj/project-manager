@@ -9,8 +9,9 @@
 # one whose provider is "none"/blank) degrades gracefully.
 #
 # Usage: source this file, then call pm_load_config [--quiet]
-#   --quiet : silent return 1 on missing config (for callers that degrade themselves)
-#   (no flag): print a hint to stderr and return 1 on missing config
+#   --quiet : silent return 1 on missing OR malformed config (callers degrade themselves)
+#   (no flag): print a hint to stderr and return 1 on missing OR malformed config
+# A missing config OR one containing invalid JSON always returns 1 (never a false success).
 #
 # pm_load_config exports ONLY the fixed framework-level paths (tool names are dynamic,
 # so there are NO per-tool exports):
@@ -66,6 +67,13 @@ pm_load_config() {
     return 1
   fi
 
+  # Fail loud on malformed/truncated JSON rather than silently degrading every read.
+  if ! jq empty "$config_path" 2>/dev/null; then
+    [[ "$quiet" == "true" ]] && return 1
+    echo "pm: invalid JSON in ${config_path}" >&2
+    return 1
+  fi
+
   # Cache the absolute config path so the accessors read the same file, cwd-independent.
   export PM_CONFIG_RESOLVED
   PM_CONFIG_RESOLVED="$(_pm_abspath "$config_path")" || PM_CONFIG_RESOLVED="$config_path"
@@ -73,7 +81,6 @@ pm_load_config() {
   # Framework dir — where lib/ + runtime state (registry.jsonl, sessions/) live.
   local fw
   fw=$(jq -r '(.paths.framework_root // "")' "$config_path")
-  [[ "$fw" == "null" ]] && fw=""
   fw="$(_pm_expand "$fw")"
   [[ -z "$fw" ]] && fw="${HOME}/.claude/pm"
   export PM_FRAMEWORK_ROOT="$fw"
@@ -81,7 +88,6 @@ pm_load_config() {
   # Default output sink used when a tool has no root of its own.
   local notes_root
   notes_root=$(jq -r '(.paths.notes_root // "")' "$config_path")
-  [[ "$notes_root" == "null" ]] && notes_root=""
   notes_root="$(_pm_expand "$notes_root")"
   [[ -z "$notes_root" ]] && notes_root="${HOME}/Code/logs/PersonalAssistant"
   export PM_NOTES_ROOT="$notes_root"
@@ -94,30 +100,29 @@ pm_load_config() {
 
 # pm_tools — echo every defined tool name, one per line.
 pm_tools() {
-  jq -r '(.tools // {}) | keys[]' "$PM_CONFIG_RESOLVED" 2>/dev/null
+  jq -r '(.tools // {}) | keys[]' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
 }
 
 # pm_tool_defined <name> — 0 iff tools.<name> exists AND its provider is non-empty and
 # != "none". This is THE single degrade predicate every skill branches on.
 pm_tool_defined() {
   local name="$1" p
-  p=$(jq -r --arg n "$name" '(.tools[$n].provider // "")' "$PM_CONFIG_RESOLVED" 2>/dev/null)
-  [[ -n "$p" && "$p" != "null" && "$p" != "none" ]]
+  p=$(jq -r --arg n "$name" '(.tools[$n].provider // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
+  [[ -n "$p" && "$p" != "none" ]]
 }
 
 # pm_tool_provider <name> — echo the provider, or "none" when absent/blank.
 pm_tool_provider() {
   local name="$1" p
-  p=$(jq -r --arg n "$name" '(.tools[$n].provider // "none")' "$PM_CONFIG_RESOLVED" 2>/dev/null)
-  [[ -z "$p" || "$p" == "null" ]] && p="none"
+  p=$(jq -r --arg n "$name" '(.tools[$n].provider // "none")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
+  [[ -z "$p" ]] && p="none"
   printf '%s\n' "$p"
 }
 
 # pm_tool_root <name> — echo the tool's output sink (~ / ${HOME} expanded), "" when unset.
 pm_tool_root() {
   local name="$1" r
-  r=$(jq -r --arg n "$name" '(.tools[$n].root // "")' "$PM_CONFIG_RESOLVED" 2>/dev/null)
-  [[ "$r" == "null" ]] && r=""
+  r=$(jq -r --arg n "$name" '(.tools[$n].root // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
   [[ -n "$r" ]] && r="$(_pm_expand "$r")"
   printf '%s\n' "$r"
 }
@@ -125,13 +130,13 @@ pm_tool_root() {
 # pm_tool_skills <name> — echo the tool's related skills, one per line ("" when none).
 pm_tool_skills() {
   local name="$1"
-  jq -r --arg n "$name" '(.tools[$n].skills // [])[]' "$PM_CONFIG_RESOLVED" 2>/dev/null
+  jq -r --arg n "$name" '(.tools[$n].skills // [])[]' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
 }
 
 # pm_tool_field <name> <field> — generic: echo tools.<name>.<field> ("" when absent).
 pm_tool_field() {
   local name="$1" field="$2"
-  jq -r --arg n "$name" --arg f "$field" '(.tools[$n][$f] // "")' "$PM_CONFIG_RESOLVED" 2>/dev/null
+  jq -r --arg n "$name" --arg f "$field" '(.tools[$n][$f] // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
 }
 
 # pm_tool_root_or_notes <name> — the tool's own root if set, else $PM_NOTES_ROOT.
@@ -139,5 +144,5 @@ pm_tool_root_or_notes() {
   local name="$1" r
   r="$(pm_tool_root "$name")"
   [[ -n "$r" ]] && { printf '%s\n' "$r"; return 0; }
-  printf '%s\n' "$PM_NOTES_ROOT"
+  printf '%s\n' "${PM_NOTES_ROOT:-}"
 }

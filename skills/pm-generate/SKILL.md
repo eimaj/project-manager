@@ -53,7 +53,7 @@ If `$REPO` can't be resolved (skill not yet symlinked), ask the user for the clo
 
 ### Step 1 — Audit active MCP servers
 
-Advisory only — this proposes providers; the user confirms per-group in Step 4. Use **`claude mcp list` as the source of truth for MCP servers** (it reflects what is actually loaded across CC versions); fall back to reading `~/.claude.json` only if the command is unavailable.
+Advisory only — this proposes providers; the user confirms per-group in Step 5. Use **`claude mcp list` as the source of truth for MCP servers** (it reflects what is actually loaded across CC versions); fall back to reading `~/.claude.json` only if the command is unavailable.
 
 ```bash
 # --- MCP servers (primary: claude mcp list) ---
@@ -67,7 +67,7 @@ echo "Detected MCP servers:"; printf '%s\n' "$MCP_RAW" | sed 's/^/  - /'
 for c in gh crrt clog; do command -v "$c" >/dev/null 2>&1 && echo "Found CLI: $c ($(command -v "$c"))"; done
 ```
 
-Present the raw detected list. Do **not** assume what each server is for — grouping (Step 3) proposes, the walk-through (Step 4) confirms.
+Present the raw detected list. Do **not** assume what each server is for — grouping (Step 3) proposes, the walk-through (Step 5) confirms.
 
 ### Step 2 — Audit active skills
 
@@ -84,11 +84,11 @@ for d in "$SKILLS_DIR"/*/; do
 done
 ```
 
-Keep this list in hand — Step 3 buckets these skills, Step 4 offers them as multi-select per group.
+Keep this list in hand — Step 3 buckets these skills, Step 5 offers them as multi-select per group.
 
 ### Step 3 — Group the audited MCPs + skills by type
 
-Cluster the detected backends and skills into **capability groups** so the walk-through is per-group, not per-item. This heuristic is **advisory and editable** — a starting point the Step 4 walk-through confirms/overrides. Match each detected MCP/CLI name (case-insensitive substring) and each skill (by name/signal keywords) into a group:
+Cluster the detected backends and skills into **capability groups** so the walk-through is per-group, not per-item. This heuristic is **advisory and editable** — a starting point the Step 5 walk-through confirms/overrides. Match each detected MCP/CLI name (case-insensitive substring) and each skill (by name/signal keywords) into a group:
 
 | Group (suggested tool name) | Detected backend contains (case-insensitive) | Suggested skills (from audit) |
 |---|---|---|
@@ -101,22 +101,11 @@ Cluster the detected backends and skills into **capability groups** so the walk-
 | `github` | gh, github | gh-pr-review, create-pr, watch-pr, branch-diff |
 | `notes` | filesystem (no backend needed) | (none) |
 
-Precedence when a backend matches more than one group: prefer the **most specific** role (e.g. `microsoft` → `email` via Outlook/365 mail AND `calendar` — offer BOTH as separate groups, since meetings-past vs calendar-future is modeled as two tools). An unrecognized server is not dropped — surface it so the user can define an ad-hoc group in Step 4. Skills whose keywords match nothing land in no group but stay available as manual multi-select adds. **This mapping lives ONLY in the generator — the rendered skills reference tools by NAME, never providers.**
+Precedence when a backend matches more than one group: prefer the **most specific** role (e.g. `microsoft` → `email` via Outlook/365 mail AND `calendar` — offer BOTH as separate groups, since meetings-past vs calendar-future is modeled as two tools). An unrecognized server is not dropped — surface it so the user can define an ad-hoc group in Step 5. Skills whose keywords match nothing land in no group but stay available as manual multi-select adds. **This mapping lives ONLY in the generator — the rendered skills reference tools by NAME, never providers.**
 
-### Step 4 — Walk the user through each group
+### Step 4 — Collect framework paths
 
-For **every** group (including any ad-hoc group for an unrecognized server), ask AskUserQuestion-style:
-
-- **a. Include this?** — yes ⇒ it becomes a tool; no ⇒ skip (record as skipped for the summary).
-- **b. Name this** — the tool's key in the registry. Default = the group name (`meetings`, `tasks`, …); free-form override allowed. Reject reserved top-level names (`version`, `paths`, `tools`).
-- **c. Where should notes live?** — the tool's `root` output sink. Default = `paths.notes_root` (Step 5). **Shareable** — offer the roots already chosen this run as pick-list options so several tools can point at one folder (e.g. `email` + `notes` → the same PersonalAssistant dir). Blank/default = no explicit `root` (the tool falls back to `notes_root` at runtime via `pm_tool_root_or_notes`).
-- **d. Which skills to link?** — multi-select from the group's audited skills (pre-checked from the Step 3 grouping), plus any manual adds. These become the tool's `skills[]`.
-
-The **`provider`** comes from the group's detected backend — confirm or override it (`none`/blank is allowed, making the tool a placeholder that degrades). For `notes`, the provider is `filesystem`.
-
-Record each confirmed tool as a row of `(name, provider, root, skills[])`. Skipped groups and `none`-provider groups are noted for the Step 9 summary.
-
-### Step 5 — Collect framework paths
+Gather these **before** the walk-through so `notes_root` is a real default for each tool's `root` in Step 5c.
 
 - **framework_root** — default `~/.claude/pm` (where `lib/` + runtime state install).
 - **notes_root** — default `~/Code/logs/PersonalAssistant` (the default output sink for any tool without its own `root`, and the base for project scaffolds).
@@ -126,19 +115,38 @@ NOTES_ROOT="${NOTES_ROOT/#\~/$HOME}"; NOTES_ROOT="${NOTES_ROOT:-$HOME/Code/logs/
 FRAMEWORK_ROOT="${FRAMEWORK_ROOT/#\~/$HOME}"; FRAMEWORK_ROOT="${FRAMEWORK_ROOT:-$HOME/.claude/pm}"
 ```
 
+### Step 5 — Walk the user through each group
+
+For **every** group (including any ad-hoc group for an unrecognized server), ask AskUserQuestion-style:
+
+- **a. Include this?** — yes ⇒ it becomes a tool; no ⇒ skip (record as skipped for the summary).
+- **b. Name this** — the tool's key in the registry. Default = the group name (`meetings`, `tasks`, …); free-form override allowed. Reject reserved top-level names (`version`, `paths`, `tools`).
+- **c. Where should notes live?** — the tool's `root` output sink. Default = `paths.notes_root` (Step 4). **Shareable** — offer the roots already chosen this run as pick-list options so several tools can point at one folder (e.g. `email` + `notes` → the same PersonalAssistant dir). Blank/default = no explicit `root` (the tool falls back to `notes_root` at runtime via `pm_tool_root_or_notes`).
+- **d. Which skills to link?** — multi-select from the group's audited skills (pre-checked from the Step 3 grouping), plus any manual adds. These become the tool's `skills[]`.
+
+The **`provider`** comes from the group's detected backend — confirm or override it (`none`/blank is allowed, making the tool a placeholder that degrades). For `notes`, the provider is `filesystem`.
+
+Record each confirmed tool as a row of `(name, provider, root, skills[])`. Skipped groups and `none`-provider groups are noted for the Step 9 summary.
+
 ### Step 6 — Write the personal config (gitignored, dynamic `tools`)
 
 Build `.tools` **dynamically** from the confirmed groups — arbitrary N, no fixed keys — then emit `version:"2.0"` + `paths`. Never overwrite an existing config without confirming first.
 
 The pattern: accumulate one NDJSON record per confirmed tool (`{name, value}`), then reduce them into the `tools` object. This assembles valid JSON for 0, 1, or N tools (0 tools ⇒ `{}`).
 
+**Overwrite guard — an existing `config.json` is the user's whole tool registry; STOP before clobbering it.** If the file already exists, do **not** write. Ask the user how to proceed and only continue on **explicit** confirmation. Re-running to change tools is common, so the safe paths are: (a) confirm overwrite (set `CONFIRM_CONFIG_OVERWRITE=yes`), or (b) back up the existing file first (`cp "$CONFIG_DST" "$CONFIG_DST.bak"`). Absent that confirmation, keep the existing config and skip the rest of this step.
+
 ```bash
 CONFIG_DST="${PM_CONFIG:-$HOME/.config/pm/config.json}"
 mkdir -p "$(dirname "$CONFIG_DST")"
 
-if [[ -f "$CONFIG_DST" ]]; then
-  echo "Config already exists at $CONFIG_DST — confirm overwrite before proceeding."
-  # On explicit confirm only, continue; else keep existing and skip this step.
+# GUARD: never silently clobber an existing personal config (it holds the whole
+# tool registry). Gate the write behind an EXPLICIT overwrite confirmation.
+if [[ -f "$CONFIG_DST" && "${CONFIRM_CONFIG_OVERWRITE:-no}" != "yes" ]]; then
+  echo "GUARD: config exists at $CONFIG_DST — confirm overwrite to proceed."
+  echo "STOP and ask the user. Safe paths: set CONFIRM_CONFIG_OVERWRITE=yes to overwrite,"
+  echo "or back up first: cp \"$CONFIG_DST\" \"$CONFIG_DST.bak\"."
+  return 10 2>/dev/null || exit 10
 fi
 
 TOOLS_NDJSON="$(mktemp)"
@@ -155,7 +163,7 @@ add_tool() {
         + {skills:$skills})}' >> "$TOOLS_NDJSON"
 }
 
-# One add_tool call per group confirmed in Step 4, e.g.:
+# One add_tool call per group confirmed in Step 5, e.g.:
 #   add_tool meetings granola "$HOME/Code/logs/meetings" granola-import meeting-summarize
 #   add_tool email    ms365-outlook "$NOTES_ROOT" pa-email-triage pa-slack-sweep
 #   add_tool notes    filesystem "$NOTES_ROOT"          # shares email's root, no skills
@@ -251,7 +259,7 @@ Print a clear summary:
   | `notes` | filesystem | `~/Code/logs/PersonalAssistant` (shared) | 0 |
   | … | … | … | … |
 
-  Build it from the confirmed rows (or `pm_tools` + the accessors after Step 6): `while read -r t; do echo "$t | $(pm_tool_provider "$t") | $(pm_tool_root_or_notes "$t") | $(pm_tool_skills "$t" | grep -c .)"; done < <(pm_tools)`.
+  Build it from the confirmed rows (or `pm_tools` + the accessors after Step 6, sourcing the resolver first so the functions are defined): `source "$FRAMEWORK_ROOT/lib/config.sh" && pm_load_config; while read -r t; do echo "$t | $(pm_tool_provider "$t") | $(pm_tool_root_or_notes "$t") | $(pm_tool_skills "$t" | grep -c .)"; done < <(pm_tools)`.
 - **Skipped / degraded groups:** list every group the user declined and every tool whose provider is `none`, with the one-line behavior change (e.g. "meetings skipped → pm-start skips meeting sync; run /granola-import by hand").
 - **Files written:** the four `~/.claude/skills/pm-*/SKILL.md`, `~/.config/pm/config.json`, `$FRAMEWORK_ROOT/lib/*`, `registry.jsonl`, `sessions/`.
 - **Next step:** "Run `/pm-init` in a project folder to onboard your first project."
@@ -259,7 +267,7 @@ Print a clear summary:
 ## Rules
 
 - **User-defined tools, not fixed roles.** There is no fixed slot vocabulary — the user names every tool. Several tools may cover one role (`todo`→crrt AND `tasks`→linear). The `tools` map is dynamic and arbitrary-N.
-- **Audit → group → walk-through.** Audit active MCPs (Step 1) + skills (Step 2), group them by type (Step 3, advisory heuristic), then walk the user per-group asking include / name / root / skills (Step 4). Never ask about fixed roles.
+- **Audit → group → walk-through.** Audit active MCPs (Step 1) + skills (Step 2), group them by type (Step 3, advisory heuristic), then walk the user per-group asking include / name / root / skills (Step 5). Never ask about fixed roles.
 - **Audit, never install.** This skill maps existing tools; it does not install MCP servers or CLIs. A tool with provider `none`/blank degrades gracefully.
 - **`none` is always valid** for any tool. Record it literally; the rendered skills branch on `pm_tool_defined`.
 - **Grouping is a suggestion.** The Step 3 heuristic only pre-fills the walk-through from what `claude mcp list` + `~/.claude/skills/*` return; the user confirms/renames/overrides every group. The mapping lives only in this generator — the rendered skills reference tools by NAME, never providers.

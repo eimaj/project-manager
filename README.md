@@ -1,9 +1,9 @@
 # pm — a generator for your own tool-agnostic PM skill set
 
-`pm` is a Claude Code skill package whose centerpiece, **`/pm-generate`**, interviews you
-about your tools and writes a *personalized* project-management workflow into your
-`~/.claude`: a `pm-init` / `pm-start` / `pm-status` / `pm-end` skill set tuned to *your*
-meeting source, tracker, logger, email, and notes store — no one else's tools or hardcoded paths.
+`pm` is a Claude Code skill package whose centerpiece, **`/pm-generate`**, audits the tools
+you already have and writes a *personalized* project-management workflow into your
+`~/.claude`: a `pm-init` / `pm-start` / `pm-status` / `pm-end` skill set built around **the
+tools you name** — no one else's tools or hardcoded paths.
 
 The workflow it generates gives you **per-project context, live session sync, and clean
 handoffs** across long-running work — including **concurrent sessions** in separate tabs that
@@ -13,41 +13,53 @@ never clobber each other's state.
 
 ## How it works
 
-### Capability slots (the core idea)
+### The named-tool registry (the core idea)
 
-The generated skills **never call a tool by name.** They resolve an abstract *capability
-slot* from your personal config:
+There are **no fixed roles.** Your personal config carries a `tools` map keyed by **names you
+choose**. Each name maps one tool to a concrete backend plus optional output and skill links:
 
-| Slot | Purpose | If empty (`none`) |
-|---|---|---|
-| `meeting_source` | pull meeting notes/transcripts at session start | `pm-start` skips meeting sync and says so |
-| `tracker` | issue/project due dates & status | `pm-start` skips due-date sync |
-| `logger` | record session actions / hygiene sweep | `pm-status` / `pm-end` skip the hygiene guard |
-| `email` | pull inbox action items / threads needing a response at session start | `pm-start` skips the inbox scan and says so |
-| `notes_store` | where project files + archives live | defaults to `~/.pm-notes` |
+```jsonc
+"tools": {
+  "<name>": {
+    "provider": "<mcp/cli/skill id, or \"none\">",  // required; "none"/blank ⇒ tool degrades
+    "root": "<abs path>",                            // optional output/notes sink; tools MAY share one
+    "skills": ["skill-a", "skill-b"]                 // optional related-skill cross-refs (advisory)
+  }
+}
+```
 
-You map each slot to whatever you actually use (or `none`). Skill logic branches on which
-slots are filled — so the same package works with *your* stack, not the author's. See
-[docs/CAPABILITY-SLOTS.md](docs/CAPABILITY-SLOTS.md).
+The map is dynamic and arbitrary-N — several tools may cover the same "role" (`todo` → `crrt`
+and `tasks` → `linear` are two distinct tools). The generated skills **address tools by NAME**
+(`tool:tasks`, `tool:meetings`) and resolve name → provider at runtime. An **undefined** name,
+or one whose `provider` is `none`/blank, **degrades gracefully** — the skill skips that
+capability and says so in the briefing rather than failing or fabricating data. `version` and
+`paths` are reserved framework keys, not tools. See [docs/SLOTS.md](docs/SLOTS.md).
 
 ### `/pm-generate` flow
 
-1. **Detect** your MCP servers (`claude mcp list`) and CLI tooling (`command -v`). Detection
-   is **tool-agnostic** — any MCP server can map to any slot; a built-in recognition map only
-   pre-fills suggestions (Jira/Linear → tracker, Gmail/Outlook → email, etc.), never constrains.
-2. **Propose** a default tool per slot from what was detected.
-3. **Confirm / override** each slot with you — `none` is always allowed.
-4. **Render** the templates into working skills with your values baked in.
-5. **Write** a gitignored personal config at `~/.config/pm/config.json`.
-6. **Install** the framework `lib/` and initialize empty runtime state.
-7. **Summarize** what was wired and which slots degraded.
+`/pm-generate` runs an **audit → group → walk-through**:
+
+1. **Audit** your active MCP servers (`claude mcp list`) and installed skills
+   (`~/.claude/skills/*`) — the raw candidates, no assumptions about what each is for.
+2. **Group** the detected backends and skills by capability type (meetings, calendar, email,
+   tasks, todo, logs, github, notes) with an **advisory** heuristic — a starting point, not a
+   constraint. Unrecognized servers stay assignable.
+3. **Walk through** each group with you: include it?, **name** the tool, pick its notes
+   **root** (shareable — several tools can point at one folder), confirm its **provider**, and
+   multi-select the **skills** to link. `none` is always allowed.
+4. **Write** a gitignored personal config (schema v2, dynamic `tools` map) at
+   `~/.config/pm/config.json`.
+5. **Install** the framework `lib/` and initialize empty runtime state.
+6. **Render** the four `pm-*` templates into working skills (near-static — only your
+   `framework_root` / `notes_root` paths are baked in; tool identity stays in the config).
+7. **Summarize** which tools were wired and which groups were skipped or degraded.
 
 ### The generated session lifecycle
 
 | Skill | When | What it does | Network |
 |---|---|---|---|
 | **`pm-init`** | once per project | scaffolds `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`; upserts the registry (deduped by root). Flows straight into `pm-start`. | none |
-| **`pm-start`** | once at session open | writes the per-session marker, **live sync** (meeting catch-up + inbox scan + tracker due dates), prints the briefing + a paste-ready `/rename`+`/color` block | live |
+| **`pm-start`** | once at session open | writes the per-session marker, **live sync** (meeting catch-up + inbox scan + task due dates, each gated on the relevant tool being defined), prints the briefing + a paste-ready `/rename`+`/color` block | live |
 | **`pm-status`** | anytime, rerunnable | hygiene guard first, then a briefing from cached files only | none |
 | **`pm-end`** | wrapping up | hygiene guard, session summary, per-session `LAST-SESSION.md` handoff block, optional per-session git commit | none |
 
@@ -111,7 +123,7 @@ other. The framework isolates per-session state and locks the shared state it mu
 working copy, and the global `registry.jsonl`.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
-[docs/CAPABILITY-SLOTS.md](docs/CAPABILITY-SLOTS.md) for full detail.
+[docs/SLOTS.md](docs/SLOTS.md) for full detail.
 
 ---
 
@@ -128,11 +140,11 @@ pm/
     scaffold.sh              #   scaffold a project's files; upsert the registry
     handoff-write.sh         #   atomic per-session LAST-SESSION.md block update
     session-commit.sh        #   per-session pm-end commit branch
-    config.sh                #   read the personal config, export PM_* slot vars
+    config.sh                #   read the personal config, expose generic tool accessors
   templates/pm-{init,start,status,end}/SKILL.md   # placeholder skills, RENDERED by pm-generate
   skills/pm-generate/        # the generator skill itself (symlinked by install.sh)
-  docs/                      # ARCHITECTURE.md, CAPABILITY-SLOTS.md
-  config/config.example.json # personal-config template ({{placeholders}})
+  docs/                      # ARCHITECTURE.md, SLOTS.md
+  config/config.example.json # personal-config template (schema v2, named-tool registry)
   tests/run.sh               # pure-bash test suite (bash + jq only)
 ```
 
@@ -141,22 +153,22 @@ pm/
 ```
 ~/.claude/skills/
   pm-generate -> <repo>/skills/pm-generate   # SYMLINK (clog-style; tracks the repo)
-  pm-{init,start,status,end}/SKILL.md        # RENDERED real files (your slot values baked in)
+  pm-{init,start,status,end}/SKILL.md        # RENDERED real files (your framework paths baked in)
 
 ~/.claude/pm/                 # framework dir — lib + runtime state ONLY (no skills)
   lib/                        # copied from the repo
   registry.jsonl              # project list (append-only, deduped by root) — gitignored state
   sessions/<id>               # per-session marker → active project root — gitignored state
 
-~/.config/pm/config.json      # personal slot→tool mapping + paths — gitignored, never committed
-~/.pm-notes/                  # default notes_store root (project files + meeting archive)
+~/.config/pm/config.json      # personal named-tool registry + paths — gitignored, never committed
+<notes_root>/                 # default output sink (paths.notes_root; any tool without its own root)
 ```
 
 ### Per-project files (in a project root)
 
 | File | Written by | Purpose |
 |---|---|---|
-| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`*_ref`, team, keywords, `collaborators`, `auto_ship`, `session_color`) |
+| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`tool_refs`, team, keywords, `collaborators`, `auto_ship`, `session_color`) |
 | `CONTEXT.md` | `pm-init` seed (never clobbered) | stable hand-edited overview |
 | `CALENDAR.md` | `pm-init` seed; `pm-start` regen | Synced due dates; manual entries below `<!-- PM:MANUAL -->` preserved |
 | `meetings.jsonl` | `pm-start` appends | `{meeting_id, date, title, path}` pointers — never transcript copies |
@@ -168,17 +180,17 @@ pm/
 
 - **Context that survives session boundaries** — per-project `CONTEXT.md` + `LAST-SESSION.md`
   handoffs mean you resume exactly where you left off.
-- **Live sync at session open** — meetings, inbox action items, and tracker due dates pulled
+- **Live sync at session open** — meetings, inbox action items, and task due dates pulled
   automatically by `pm-start`.
 - **Cheap status, expensive only when needed** — `pm-status` is cache-only/rerunnable; network
   work is isolated to `pm-start`.
 - **Clean EOD capture** — `pm-end` writes a structured handoff without clobbering other sessions' blocks.
 - **Safe concurrency** — per-session ids, markers, handoff blocks, and commit branches plus locked
   shared writes let multiple tabs run at once without lost updates.
-- **Tool-agnostic** — capability slots mean it works with *your* stack, not the author's.
+- **Tool-agnostic** — the named-tool registry means it works with *your* stack, not the author's.
 - **Familiar install** — the same symlink + gitignored-config convention as
   [`clog`](https://github.com/eimaj/clog). *(Caveat: the **generated** `pm-*` skills are rendered as real
-  files with your slot values baked in — not pure symlinks like clog. Only `pm-generate` itself
+  files with your framework paths baked in — not pure symlinks like clog. Only `pm-generate` itself
   is symlinked. Re-running `/pm-generate` re-renders them.)*
 
 ## Why it might NOT be for everyone (honest take)
@@ -190,7 +202,7 @@ pm/
   not help.
 - **Opinionated workflow.** It imposes a session lifecycle (init → start → status → end) and a
   handoff format; if your workflow differs, you'll fight it.
-- **Full value needs at least a meeting source + a tracker.** With both slots empty it degrades
+- **Full value needs at least a meeting tool + a task tool.** With neither defined it degrades
   to a glorified notes scaffolder.
 - **Bash + symlinks.** macOS / Linux / WSL only; no native Windows support.
 - **You maintain the generated skills.** Regenerating after upstream template changes is a manual
@@ -209,7 +221,7 @@ cd ~/Code/pm
 Then in Claude Code:
 
 ```
-/pm-generate            # detect tools, confirm slots, render your pm-* skills
+/pm-generate            # audit tools, name them, render your pm-* skills
 /pm-init                # (in a project folder) onboard your first project
 ```
 

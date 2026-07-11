@@ -8,8 +8,8 @@
 # This script names NO concrete tool. Each project records a **tool_refs map** keyed by the
 # tool names the personal registry (~/.config/pm/config.json) defines:
 #   tool_refs.<name>  — how THIS project is identified inside tool <name>'s backend
-#                       (a Granola folder for `meetings`, a Linear project id for `tasks`, a
-#                       crrt tag for `todo`, an Outlook label for `email`, an owner/repo for
+#                       (a meetings folder for `meetings`, a tracker project id for `tasks`, a
+#                       todo tag for `todo`, an email label for `email`, an owner/repo for
 #                       `github`, …). Meaning is defined by the tool's backend; resolved at
 #                       runtime from ~/.config/pm/config.json. A tool with no entry falls back
 #                       to keyword matching.
@@ -148,8 +148,8 @@ TOOL_REFS_JSON="$(tool_refs_to_json "${PM_TOOL_REFS[@]+"${PM_TOOL_REFS[@]}"}")"
 mkdir -p "$PM_ROOT/.pm"
 CONFIG_PATH="$PM_ROOT/.pm/config.json"
 # Read the existing config so re-init is non-destructive: scaffold MERGES the fields it
-# manages onto the prior object, so any unknown/extra fields (e.g. linear_project,
-# granola_folder, crrt_tag) survive verbatim. Absent, empty, or unparseable prior config
+# manages onto the prior object, so any unknown/extra fields (e.g. a custom tracker id,
+# meetings folder, or todo tag) survive verbatim. Absent, empty, or unparseable prior config
 # -> treat as {} (a brand-new project). An empty file makes jq exit 0 with no output;
 # normalize that (and any blank) to {}.
 PRIOR=$(jq -c . "$CONFIG_PATH" 2>/dev/null || echo '{}')

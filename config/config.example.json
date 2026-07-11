@@ -3,12 +3,12 @@
   "version": "2.0",
   "paths": {
     "framework_root": "~/.claude/pm",
-    "notes_root": "~/Code/logs/PersonalAssistant"
+    "notes_root": "~/pm-notes"
   },
   "tools": {
     "meetings": {
       "provider": "granola",
-      "root": "~/Code/logs/meetings",
+      "root": "~/pm-notes/meetings",
       "skills": ["granola-import", "meeting-summarize", "pa-meeting-catchup"]
     },
     "calendar": {
@@ -17,30 +17,30 @@
     },
     "email": {
       "provider": "ms365-outlook",
-      "root": "~/Code/logs/PersonalAssistant",
+      "root": "~/pm-notes",
       "skills": ["pa-email-triage", "pa-slack-sweep", "pa-morning-briefing"]
     },
     "tasks": {
       "provider": "linear",
-      "skills": ["pa-task-triage", "pa-linear-project-update", "crrt-sync", "tn-epic-updates"]
+      "skills": ["pa-task-triage", "pa-linear-project-update", "todoapp-sync", "tn-epic-updates"]
     },
     "github": {
       "provider": "gh",
       "skills": ["gh-pr-review", "create-pr", "watch-pr", "branch-diff"]
     },
     "todo": {
-      "provider": "crrt",
-      "root": "~/Code/logs/crrt",
-      "skills": ["crrt", "crrt-journal", "crrt-sync"]
+      "provider": "todoApp",
+      "root": "~/pm-notes/todos",
+      "skills": ["todoapp-cli", "todoapp-journal", "todoapp-sync"]
     },
     "logs": {
-      "provider": "clog",
-      "root": "~/Code/logs",
-      "skills": ["clog", "clog-sweep", "clog-day", "clog-week", "clog-search"]
+      "provider": "logTool",
+      "root": "~/pm-notes/logs",
+      "skills": ["logtool", "logtool-sweep", "logtool-day", "logtool-week", "logtool-search"]
     },
     "notes": {
       "provider": "filesystem",
-      "root": "~/Code/logs/PersonalAssistant",
+      "root": "~/pm-notes",
       "skills": []
     }
   }

@@ -8,12 +8,12 @@ work for someone on a different meeting tool, tracker, or logger without editing
 ## The tool object
 
 Your config's `tools` map (schema v2) is keyed by **arbitrary user-chosen names**. Several
-tools may cover the same "role" — `todo` → `crrt` and `tasks` → `linear` are two distinct
+tools may cover the same "role" — `todo` → `todoApp` and `tasks` → `linear` are two distinct
 tools. Each name maps one tool to a value with three fields:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `provider` | yes | the concrete backend — an MCP server, CLI, or skill id (e.g. `granola`, `linear`, `gh`, `clog`, `filesystem`). `"none"`/blank makes the tool a placeholder that **degrades**. |
+| `provider` | yes | the concrete backend — an MCP server, CLI, or skill id (e.g. `granola`, `linear`, `gh`, `logTool`, `filesystem`). `"none"`/blank makes the tool a placeholder that **degrades**. |
 | `root` | no | an absolute output/notes sink for this tool. Multiple tools **may share one folder**. Omitted ⇒ the tool falls back to `paths.notes_root` at runtime. |
 | `skills` | no | related-skill cross-refs (advisory) — see [The `skills[]` linkage](#the-skills-linkage). |
 
@@ -30,17 +30,17 @@ Shape:
   "version": "2.0",
   "paths": {
     "framework_root": "~/.claude/pm",
-    "notes_root": "~/Code/logs/PersonalAssistant"
+    "notes_root": "~/pm-notes"
   },
   "tools": {
     "meetings": {
       "provider": "granola",
-      "root": "~/Code/logs/meetings",
+      "root": "~/pm-notes/meetings",
       "skills": ["granola-import", "meeting-summarize", "pa-meeting-catchup"]
     },
-    "tasks":  { "provider": "linear", "skills": ["pa-task-triage", "crrt-sync"] },
-    "email":  { "provider": "ms365-outlook", "root": "~/Code/logs/PersonalAssistant" },
-    "notes":  { "provider": "filesystem", "root": "~/Code/logs/PersonalAssistant", "skills": [] }
+    "tasks":  { "provider": "linear", "skills": ["pa-task-triage", "todoapp-sync"] },
+    "email":  { "provider": "ms365-outlook", "root": "~/pm-notes" },
+    "notes":  { "provider": "filesystem", "root": "~/pm-notes", "skills": [] }
   }
 }
 ```
@@ -101,7 +101,7 @@ notes scaffolder — still useful, but you lose the live-sync payoff.
 
 A tool's `root` is where its output lands. Multiple tools **may point at one folder** — during
 `/pm-generate`'s walk-through, roots already chosen this run are offered as pick-list options,
-so (for example) `email` and `notes` can share one PersonalAssistant directory. A tool with no
+so (for example) `email` and `notes` can share one shared notes directory. A tool with no
 `root` of its own resolves through `pm_tool_root_or_notes`, which falls back to
 `paths.notes_root`. This keeps output consolidated without forcing a per-tool folder.
 
@@ -117,7 +117,7 @@ and routing**: it records which skills belong to a tool so a skill can find its 
 `/pm-generate` audits MCP servers with **`claude mcp list`** and installed skills under
 `~/.claude/skills/*`, then **groups** them by capability type as an advisory starting point
 (e.g. `granola`/`zoom` → a `meetings` group; `linear`/`jira` → `tasks`; `outlook`/`gmail` →
-`email`; `clog` → `logs`). You confirm, rename, or override every group in the walk-through,
+`email`; `logTool` → `logs`). You confirm, rename, or override every group in the walk-through,
 and `none` is always offered. Any server works under any name regardless of the grouping —
 the suggestion is a convenience, not a constraint, and unrecognized servers stay assignable as
 ad-hoc groups. The grouping map lives **only in the generator**; the rendered skills reference

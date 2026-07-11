@@ -158,7 +158,12 @@ PRIOR=$(jq -c . "$CONFIG_PATH" 2>/dev/null || echo '{}')
 # non-empty value (keep/keeparr). collaborators seed [] / auto_ship seed false for a brand-new
 # config; a validated --auto-ship/PM_AUTO_SHIP override wins over the prior flag. created is
 # preserved from the prior config (fresh only when there is no prior).
-jq -n \
+# Atomic write: build the merged config into a temp file and only mv it into place if jq
+# succeeds. jq writing directly to "$CONFIG_PATH" would truncate it BEFORE running, so a merge
+# error under set -euo pipefail would leave a 0-byte config, losing preserved content
+# (collaborators, auto_ship, unknown fields, prior tool_refs). Same discipline as the registry.
+CONFIG_TMP="$(mktemp)"
+if jq -n \
   --argjson prior "$PRIOR" \
   --arg name "$PM_NAME" \
   --arg root "$PM_ROOT" \
@@ -174,11 +179,12 @@ jq -n \
   def keeparr(new; old): if (new | length) > 0 then new else (old // new) end;
   # tool_refs is an object: the outer  $prior * managed  deep-merge recurses into it, so newly
   # passed refs merge onto any prior/hand-set tool_refs entries (last-wins per name) without
-  # dropping the others. Seed {} for a brand-new config.
+  # dropping the others. Guard the prior to an object (objects // {}) so a malformed prior
+  # tool_refs (e.g. a stray string) degrades to {} instead of crashing on string * object.
   $prior * {
     name:          $name,
     root:          $root,
-    tool_refs:     (($prior.tool_refs // {}) * $tool_refs),
+    tool_refs:     ((($prior.tool_refs | objects) // {}) * $tool_refs),
     team:          keeparr($team; $prior.team),
     keywords:      keeparr($keywords; $prior.keywords),
     collaborators: ($prior.collaborators // []),
@@ -186,8 +192,15 @@ jq -n \
     session_color: keep($session_color; $prior.session_color),
     created:       ($prior.created // $created)
   }' \
-  > "$CONFIG_PATH"
-echo "wrote   $CONFIG_PATH"
+  > "$CONFIG_TMP"; then
+  mv "$CONFIG_TMP" "$CONFIG_PATH"
+  echo "wrote   $CONFIG_PATH"
+else
+  rc=$?
+  rm -f "$CONFIG_TMP"
+  echo "scaffold.sh: failed to build config.json; leaving existing $CONFIG_PATH untouched." >&2
+  exit "$rc"
+fi
 
 # ---- seed CONTEXT.md (never clobber) ------------------------------------------
 CONTEXT_PATH="$PM_ROOT/CONTEXT.md"

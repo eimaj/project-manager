@@ -277,6 +277,7 @@ cfg_fixture() {
     "meetings": { "provider": "granola", "root": "~/shared_sink", "skills": ["granola-import", "meeting-summarize"] },
     "notes":    { "provider": "filesystem", "root": "~/shared_sink", "skills": [] },
     "tasks":    { "provider": "linear" },
+    "home":     { "provider": "filesystem", "root": "${HOME}/x/y" },
     "off":      { "provider": "none" },
     "blank":    { "provider": "" }
   }
@@ -305,7 +306,7 @@ t_cfg_tools_list() {
   local c="$WORK/cfg_list.json"; cfg_fixture "$c"
   # order-independent: sort both sides before comparing.
   local got; got="$(load_and_echo "$c" 'pm_tools' | sort | tr '\n' ' ')"
-  assert_eq "blank meetings notes off tasks " "$got" "pm_tools lists exactly the fixture's tool names"
+  assert_eq "blank home meetings notes off tasks " "$got" "pm_tools lists exactly the fixture's tool names"
 }
 
 t_cfg_tool_defined() {
@@ -329,6 +330,7 @@ t_cfg_tool_root() {
   assert_eq "$HOME/shared_sink" "$(load_and_echo "$c" 'pm_tool_root meetings')" "root: tilde-expanded"
   # shared-root: two distinct tools resolve to the same folder.
   assert_eq "$HOME/shared_sink" "$(load_and_echo "$c" 'pm_tool_root notes')"    "root: second tool resolves same shared folder"
+  assert_eq "$HOME/x/y"         "$(load_and_echo "$c" 'pm_tool_root home')"     "root: \${HOME} expanded"
   assert_eq ""                  "$(load_and_echo "$c" 'pm_tool_root tasks')"    "root: unset -> empty"
   assert_eq ""                  "$(load_and_echo "$c" 'pm_tool_root ghost')"    "root: absent tool -> empty"
 }
@@ -353,8 +355,47 @@ t_cfg_tool_field() {
   assert_eq ""        "$(load_and_echo "$c" 'pm_tool_field tasks root')"        "field: absent sub-key -> empty"
 }
 
+# pm_load_config's failure contract: a missing OR malformed config returns 1 (never a
+# false success). --quiet stays silent; non-quiet prints a hint to stderr.
+t_cfg_load_missing() {
+  local c="$WORK/cfg_absent.json"   # never created
+  local rc err
+  PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config >/dev/null 2>&1"; rc=$?
+  assert_eq 1 "$rc" "load: missing config returns 1"
+  PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet >/dev/null 2>&1"; rc=$?
+  assert_eq 1 "$rc" "load: missing config --quiet returns 1"
+  err="$(PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet" 2>&1 >/dev/null)"
+  assert_eq "" "$err" "load: missing config --quiet is silent on stderr"
+  err="$(PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config" 2>&1 >/dev/null)"
+  assert_contains "$err" "no config at" "load: missing config non-quiet prints hint"
+}
+
+t_cfg_load_malformed() {
+  local c="$WORK/cfg_bad.json"; printf '{ bad json' > "$c"
+  local rc
+  PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config >/dev/null 2>&1"; rc=$?
+  assert_eq 1 "$rc" "load: malformed config returns 1"
+  # explicit W1 contract: malformed config must NOT report success.
+  if PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config >/dev/null 2>&1"; then
+    fail "load: malformed config does NOT return 0"
+  else
+    pass "load: malformed config does NOT return 0"
+  fi
+}
+
+# W2 + set -u guard: a bare assignment x=$(pm_tools) under `set -euo pipefail` with a bad
+# config must not abort the subshell — it completes with x empty.
+t_cfg_set_e_accessor() {
+  local c="$WORK/cfg_bad_sete.json"; printf '{ bad json' > "$c"
+  local out rc
+  out="$(PM_CONFIG="$c" bash -c "set -euo pipefail; source '$REPO/lib/config.sh'; pm_load_config --quiet || true; x=\$(pm_tools); echo survived:[\$x]" 2>/dev/null)"; rc=$?
+  assert_eq 0 "$rc"            "set -e: x=\$(pm_tools) on bad config does not abort subshell"
+  assert_eq "survived:[]" "$out" "set -e: subshell completes, x is empty"
+}
+
 t_cfg_framework_paths; t_cfg_framework_paths_defaults; t_cfg_tools_list; t_cfg_tool_defined
 t_cfg_tool_provider; t_cfg_tool_root; t_cfg_tool_skills; t_cfg_tool_root_or_notes; t_cfg_tool_field
+t_cfg_load_missing; t_cfg_load_malformed; t_cfg_set_e_accessor
 
 # ── install.sh idempotency + dry-run ─────────────────────────────────────────────
 section "install.sh"

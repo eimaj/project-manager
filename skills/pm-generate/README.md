@@ -37,5 +37,5 @@ a slot to `none`).
 
 ## See also
 
-- [../../docs/CAPABILITY-SLOTS.md](../../docs/CAPABILITY-SLOTS.md) — the slot model + degradation contract
+- [../../docs/SLOTS.md](../../docs/SLOTS.md) — the named-tool registry + degradation contract
 - [../../docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) — install layout, registry, sessions, per-project files

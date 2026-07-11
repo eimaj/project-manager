@@ -282,10 +282,32 @@ t_sc_malformed_prior_new() {
   assert_eq "null"  "$(jq -r '.linear_project' "$cfg")" "malformed prior -> no garbage carried over"
 }
 
+t_sc_nonobject_refs_atomic() {
+  # Atomic write + object-guard: a valid prior config whose tool_refs is a NON-object (a stray
+  # string) plus an unknown field must NOT crash the merge or truncate the config. The guard
+  # degrades the bad prior tool_refs to {} and re-init succeeds, preserving the unknown field
+  # and turning tool_refs into a proper object containing the new ref. Regression for the
+  # data-loss warning: a jq merge error would previously leave a 0-byte config.
+  local d="$WORK/sc_nonobj"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa/.pm"
+  local cfg="$d/pa/.pm/config.json"
+  # valid JSON, but tool_refs is a string and there is an unknown field to preserve
+  printf '{"name":"A","root":"%s","tool_refs":"x","important_unknown":"KEEPME"}\n' "$d/pa" > "$cfg"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" --tool-ref meetings=Folder1 >/dev/null 2>&1
+  local rc=$?
+  assert_eq 0 "$rc" "non-object prior tool_refs: re-init exits 0"
+  if [[ -s "$cfg" ]]; then pass "non-object prior: config not truncated (non-empty)"
+  else fail "non-object prior: config not truncated (non-empty)"; fi
+  if jq -e . "$cfg" >/dev/null 2>&1; then pass "non-object prior: config is valid JSON"
+  else fail "non-object prior: config is valid JSON"; fi
+  assert_eq "KEEPME"  "$(jq -r '.important_unknown' "$cfg")"   "non-object prior: unknown field preserved"
+  assert_eq "object"  "$(jq -r '.tool_refs | type' "$cfg")"    "non-object prior: tool_refs now an object"
+  assert_eq "Folder1" "$(jq -r '.tool_refs.meetings' "$cfg")"  "non-object prior: new ref present"
+}
+
 t_sc_append; t_sc_update_inplace; t_sc_junk_line; t_sc_collab_seed_preserve; t_sc_collab_degrades
 t_sc_autoship_seed_preserve; t_sc_autoship_flag_and_degrades
 t_sc_unknown_fields_preserved; t_sc_tool_refs_build; t_sc_tool_refs_edge; t_sc_empty_input_no_clobber
-t_sc_fresh_created_present; t_sc_malformed_prior_new
+t_sc_fresh_created_present; t_sc_malformed_prior_new; t_sc_nonobject_refs_atomic
 
 # ── config.sh named-tool resolver ─────────────────────────────────────────────────
 section "config.sh"

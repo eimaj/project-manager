@@ -9,24 +9,24 @@
     "meetings": {
       "provider": "granola",
       "root": "~/pm-notes/meetings",
-      "skills": ["granola-import", "meeting-summarize", "pa-meeting-catchup"]
+      "skills": ["notes-import", "meeting-summary", "meeting-catchup"]
     },
     "calendar": {
       "provider": "ms365-calendar",
-      "skills": ["pa-morning-briefing"]
+      "skills": ["morning-briefing"]
     },
     "email": {
       "provider": "ms365-outlook",
       "root": "~/pm-notes",
-      "skills": ["pa-email-triage", "pa-slack-sweep", "pa-morning-briefing"]
+      "skills": ["email-triage", "inbox-sweep", "morning-briefing"]
     },
     "tasks": {
       "provider": "linear",
-      "skills": ["pa-task-triage", "pa-linear-project-update", "todoapp-sync", "tn-epic-updates"]
+      "skills": ["task-triage", "project-update", "todoapp-sync", "epic-status"]
     },
     "github": {
       "provider": "gh",
-      "skills": ["gh-pr-review", "create-pr", "watch-pr", "branch-diff"]
+      "skills": ["pr-review", "open-pr", "pr-watch", "branch-diff"]
     },
     "todo": {
       "provider": "todoApp",

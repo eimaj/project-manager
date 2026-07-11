@@ -36,9 +36,9 @@ Shape:
     "meetings": {
       "provider": "granola",
       "root": "~/pm-notes/meetings",
-      "skills": ["granola-import", "meeting-summarize", "pa-meeting-catchup"]
+      "skills": ["notes-import", "meeting-summary", "meeting-catchup"]
     },
-    "tasks":  { "provider": "linear", "skills": ["pa-task-triage", "todoapp-sync"] },
+    "tasks":  { "provider": "linear", "skills": ["task-triage", "todoapp-sync"] },
     "email":  { "provider": "ms365-outlook", "root": "~/pm-notes" },
     "notes":  { "provider": "filesystem", "root": "~/pm-notes", "skills": [] }
   }
@@ -108,7 +108,7 @@ so (for example) `email` and `notes` can share one shared notes directory. A too
 ## The `skills[]` linkage
 
 Each tool may list related `skills[]` — the skills that operate that tool (e.g. `meetings` →
-`granola-import`, `meeting-summarize`, `pa-meeting-catchup`). This linkage is for **discovery
+`notes-import`, `meeting-summary`, `meeting-catchup`). This linkage is for **discovery
 and routing**: it records which skills belong to a tool so a skill can find its siblings via
 `pm_tool_skills <name>`. It is **advisory** — the framework never auto-invokes a linked skill.
 

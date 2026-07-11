@@ -1,32 +1,47 @@
 {
-  "_comment": "pm personal config template. pm-generate renders this to ~/.config/pm/config.json (gitignored). Each capability slot maps an abstract role to a concrete tool the user confirmed, or \"none\" to degrade. Skill logic reads slots, never tool names.",
-  "version": "1.0",
-  "slots": {
-    "meeting_source": {
-      "tool": "{{meeting_source}}",
-      "_options": "MCP/CLI/skill that pulls meeting notes & transcripts at session start, or \"none\""
+  "_comment": "pm personal config (schema v2). pm-generate renders this to ~/.config/pm/config.json (gitignored). `tools` is a user-defined map: each key is a tool name you choose, each value maps that name to a concrete `provider` (MCP/CLI/skill id), an optional output `root` (multiple tools may share one), and optional related `skills[]`. Skills address tools BY NAME and degrade when `provider` is \"none\"/blank. `version` + `paths` are reserved framework keys, not tools.",
+  "version": "2.0",
+  "paths": {
+    "framework_root": "~/.claude/pm",
+    "notes_root": "~/Code/logs/PersonalAssistant"
+  },
+  "tools": {
+    "meetings": {
+      "provider": "granola",
+      "root": "~/Code/logs/meetings",
+      "skills": ["granola-import", "meeting-summarize", "pa-meeting-catchup"]
     },
-    "tracker": {
-      "tool": "{{tracker}}",
-      "_options": "issue/project tracker for due dates & status, or \"none\""
-    },
-    "logger": {
-      "tool": "{{logger}}",
-      "_options": "activity logger / hygiene-sweep tool, or \"none\""
+    "calendar": {
+      "provider": "ms365-calendar",
+      "skills": ["pa-morning-briefing"]
     },
     "email": {
-      "tool": "{{email}}",
-      "_options": "MCP/CLI/skill that reads your inbox for action items at session start, or \"none\""
+      "provider": "ms365-outlook",
+      "root": "~/Code/logs/PersonalAssistant",
+      "skills": ["pa-email-triage", "pa-slack-sweep", "pa-morning-briefing"]
     },
-    "notes_store": {
-      "tool": "filesystem",
-      "root": "{{notes_root}}",
-      "_options": "directory root where project files & archives live; defaults to ~/.pm-notes if unset"
+    "tasks": {
+      "provider": "linear",
+      "skills": ["pa-task-triage", "pa-linear-project-update", "crrt-sync", "tn-epic-updates"]
+    },
+    "github": {
+      "provider": "gh",
+      "skills": ["gh-pr-review", "create-pr", "watch-pr", "branch-diff"]
+    },
+    "todo": {
+      "provider": "crrt",
+      "root": "~/Code/logs/crrt",
+      "skills": ["crrt", "crrt-journal", "crrt-sync"]
+    },
+    "logs": {
+      "provider": "clog",
+      "root": "~/Code/logs",
+      "skills": ["clog", "clog-sweep", "clog-day", "clog-week", "clog-search"]
+    },
+    "notes": {
+      "provider": "filesystem",
+      "root": "~/Code/logs/PersonalAssistant",
+      "skills": []
     }
-  },
-  "paths": {
-    "notes_root": "{{notes_root}}",
-    "framework_root": "{{framework_root}}",
-    "meeting_archive": "{{notes_root}}/meetings"
   }
 }

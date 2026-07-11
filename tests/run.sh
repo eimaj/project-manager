@@ -191,39 +191,69 @@ t_sc_autoship_flag_and_degrades() {
 
 t_sc_unknown_fields_preserved() {
   # The core fix: re-init MERGES managed fields onto the existing config, so unknown/extra
-  # fields (linear_project, granola_folder, crrt_tag, ...) survive verbatim.
+  # fields (linear_project, granola_folder, crrt_tag, ...) AND hand-set tool_refs entries survive
+  # verbatim, while a new --tool-ref merges in (last-wins per name) without dropping the others.
   local d="$WORK/sc_unknown"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
   local cfg="$d/pa/.pm/config.json"
-  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" PM_TRACKER_REF=T1 "$SC" >/dev/null 2>&1
-  # hand-add unknown fields the tool-agnostic scaffold does not manage
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" --tool-ref meetings=Folder1 >/dev/null 2>&1
+  # hand-add unknown fields the scaffold does not manage AND a hand-set tool_refs entry
   local tmp; tmp="$(mktemp)"
-  jq '.linear_project="PROJ-123" | .granola_folder="Team Sync" | .crrt_tag="foo" | .linear_project_id="abc-123"' \
+  jq '.linear_project="PROJ-123" | .granola_folder="Team Sync" | .crrt_tag="foo"
+      | .linear_project_id="abc-123" | .tool_refs.tasks="HAND-SET"' \
     "$cfg" > "$tmp" && mv "$tmp" "$cfg"
   local created1; created1="$(jq -r '.created' "$cfg")"
   sleep 1
-  # re-init with a changed name + tracker; unknowns must survive, known fields update
-  PM_FRAMEWORK_ROOT="$fw" PM_NAME=Renamed PM_ROOT="$d/pa" PM_TRACKER_REF=T2 "$SC" >/dev/null 2>&1
+  # re-init with a changed name + a changed/added tool-ref; unknowns + hand-set refs must survive
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=Renamed PM_ROOT="$d/pa" "$SC" \
+    --tool-ref meetings=Folder2 --tool-ref todo=newtag >/dev/null 2>&1
   assert_eq "PROJ-123"  "$(jq -r '.linear_project' "$cfg")"     "re-init preserves unknown linear_project"
   assert_eq "Team Sync" "$(jq -r '.granola_folder' "$cfg")"     "re-init preserves unknown granola_folder"
   assert_eq "foo"       "$(jq -r '.crrt_tag' "$cfg")"           "re-init preserves unknown crrt_tag"
   assert_eq "abc-123"   "$(jq -r '.linear_project_id' "$cfg")"  "re-init preserves unknown linear_project_id"
   assert_eq "Renamed"   "$(jq -r '.name' "$cfg")"               "re-init updates managed name"
-  assert_eq "T2"        "$(jq -r '.tracker_ref' "$cfg")"        "re-init updates managed tracker_ref"
+  assert_eq "HAND-SET"  "$(jq -r '.tool_refs.tasks' "$cfg")"    "re-init preserves hand-set tool_refs entry"
+  assert_eq "Folder2"   "$(jq -r '.tool_refs.meetings' "$cfg")" "re-init updates existing tool_refs entry"
+  assert_eq "newtag"    "$(jq -r '.tool_refs.todo' "$cfg")"     "re-init merges new tool_refs entry"
   assert_eq "$created1" "$(jq -r '.created' "$cfg")"            "re-init preserves config created"
   if jq -e . "$cfg" >/dev/null 2>&1; then pass "re-init config is valid JSON"
   else fail "re-init config is valid JSON"; fi
 }
 
+t_sc_tool_refs_build() {
+  # --tool-ref pairs build a tool_refs object in config AND the registry line carries it.
+  local d="$WORK/sc_toolrefs"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" \
+    --tool-ref a=1 --tool-ref b=2 >/dev/null 2>&1
+  assert_eq '{"a":"1","b":"2"}' "$(jq -c '.tool_refs' "$cfg")" "--tool-ref builds tool_refs object"
+  assert_eq '{"a":"1","b":"2"}' "$(jq -c '.tool_refs' "$fw/registry.jsonl")" "registry line carries tool_refs"
+}
+
+t_sc_tool_refs_edge() {
+  # Value containing '=' splits on the FIRST '=' only; blank/no-value pairs are skipped;
+  # a duplicate name is last-wins.
+  local d="$WORK/sc_toolrefs_edge"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" \
+    --tool-ref github=Enflick/repo=x --tool-ref blank= --tool-ref noeq \
+    --tool-ref dup=first --tool-ref dup=second >/dev/null 2>&1
+  assert_eq "Enflick/repo=x" "$(jq -r '.tool_refs.github' "$cfg")" "splits on first = only"
+  assert_eq "null"           "$(jq -r '.tool_refs.blank' "$cfg")"  "blank value skipped"
+  assert_eq "null"           "$(jq -r '.tool_refs.noeq' "$cfg")"   "no-= pair skipped"
+  assert_eq "second"         "$(jq -r '.tool_refs.dup' "$cfg")"    "duplicate name last-wins"
+}
+
 t_sc_empty_input_no_clobber() {
-  # Requirement #3: a blank input for a managed field must NOT overwrite a prior non-empty value.
+  # Requirement #3: a blank input for a managed field must NOT overwrite a prior non-empty value,
+  # and a re-init with NO --tool-ref must keep prior tool_refs entirely.
   local d="$WORK/sc_noclobber"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
   local cfg="$d/pa/.pm/config.json"
-  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" PM_TRACKER_REF=KEEP-ME \
-    PM_MEETING_REF=MeetFolder PM_KEYWORDS="alpha,beta" "$SC" >/dev/null 2>&1
-  # re-init with no tracker/meeting/keywords inputs at all -> prior values must remain
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" PM_KEYWORDS="alpha,beta" "$SC" \
+    --tool-ref tasks=KEEP-ME --tool-ref meetings=MeetFolder >/dev/null 2>&1
+  # re-init with no tool-ref/keywords inputs at all -> prior values must remain
   PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
-  assert_eq "KEEP-ME"    "$(jq -r '.tracker_ref' "$cfg")"  "empty input keeps prior tracker_ref"
-  assert_eq "MeetFolder" "$(jq -r '.meeting_ref' "$cfg")"  "empty input keeps prior meeting_ref"
+  assert_eq "KEEP-ME"    "$(jq -r '.tool_refs.tasks' "$cfg")"    "empty input keeps prior tool_refs.tasks"
+  assert_eq "MeetFolder" "$(jq -r '.tool_refs.meetings' "$cfg")" "empty input keeps prior tool_refs.meetings"
   assert_eq '["alpha","beta"]' "$(jq -c '.keywords' "$cfg")" "empty input keeps prior keywords"
 }
 
@@ -242,7 +272,7 @@ t_sc_malformed_prior_new() {
   local d="$WORK/sc_malformed"; local fw="$d/fw"
   mkdir -p "$fw" "$d/junk/.pm"
   printf 'not json{ linear_project garbage' > "$d/junk/.pm/config.json"
-  PM_FRAMEWORK_ROOT="$fw" PM_NAME=Fresh PM_ROOT="$d/junk" PM_TRACKER_REF=T "$SC" >/dev/null 2>&1
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=Fresh PM_ROOT="$d/junk" "$SC" --tool-ref tasks=T >/dev/null 2>&1
   local cfg="$d/junk/.pm/config.json"
   if jq -e . "$cfg" >/dev/null 2>&1; then pass "malformed prior -> valid JSON written"
   else fail "malformed prior -> valid JSON written"; fi
@@ -252,53 +282,173 @@ t_sc_malformed_prior_new() {
   assert_eq "null"  "$(jq -r '.linear_project' "$cfg")" "malformed prior -> no garbage carried over"
 }
 
+t_sc_nonobject_refs_atomic() {
+  # Atomic write + object-guard: a valid prior config whose tool_refs is a NON-object (a stray
+  # string) plus an unknown field must NOT crash the merge or truncate the config. The guard
+  # degrades the bad prior tool_refs to {} and re-init succeeds, preserving the unknown field
+  # and turning tool_refs into a proper object containing the new ref. Regression for the
+  # data-loss warning: a jq merge error would previously leave a 0-byte config.
+  local d="$WORK/sc_nonobj"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa/.pm"
+  local cfg="$d/pa/.pm/config.json"
+  # valid JSON, but tool_refs is a string and there is an unknown field to preserve
+  printf '{"name":"A","root":"%s","tool_refs":"x","important_unknown":"KEEPME"}\n' "$d/pa" > "$cfg"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" --tool-ref meetings=Folder1 >/dev/null 2>&1
+  local rc=$?
+  assert_eq 0 "$rc" "non-object prior tool_refs: re-init exits 0"
+  if [[ -s "$cfg" ]]; then pass "non-object prior: config not truncated (non-empty)"
+  else fail "non-object prior: config not truncated (non-empty)"; fi
+  if jq -e . "$cfg" >/dev/null 2>&1; then pass "non-object prior: config is valid JSON"
+  else fail "non-object prior: config is valid JSON"; fi
+  assert_eq "KEEPME"  "$(jq -r '.important_unknown' "$cfg")"   "non-object prior: unknown field preserved"
+  assert_eq "object"  "$(jq -r '.tool_refs | type' "$cfg")"    "non-object prior: tool_refs now an object"
+  assert_eq "Folder1" "$(jq -r '.tool_refs.meetings' "$cfg")"  "non-object prior: new ref present"
+}
+
 t_sc_append; t_sc_update_inplace; t_sc_junk_line; t_sc_collab_seed_preserve; t_sc_collab_degrades
 t_sc_autoship_seed_preserve; t_sc_autoship_flag_and_degrades
-t_sc_unknown_fields_preserved; t_sc_empty_input_no_clobber; t_sc_fresh_created_present; t_sc_malformed_prior_new
+t_sc_unknown_fields_preserved; t_sc_tool_refs_build; t_sc_tool_refs_edge; t_sc_empty_input_no_clobber
+t_sc_fresh_created_present; t_sc_malformed_prior_new; t_sc_nonobject_refs_atomic
 
-# ── config.sh slot resolution ────────────────────────────────────────────────────
+# ── config.sh named-tool resolver ─────────────────────────────────────────────────
 section "config.sh"
 
+# Source config.sh, load the fixture, then run the caller snippet in the SAME shell so
+# the framework-path exports and $PM_CONFIG_RESOLVED are visible to the accessors.
 load_and_echo() { PM_CONFIG="$1" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet >/dev/null 2>&1; $2"; }
 
-t_cfg_empty_slot() {
-  local c="$WORK/cfg_empty.json"
-  echo '{"slots":{"meeting_source":{"tool":""},"tracker":{"tool":"x"},"logger":{"tool":"x"},"email":{"tool":"x"}}}' > "$c"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_MEETING_SOURCE"')" "empty slot tool -> none"
+# A representative v2 fixture: filled tools, a "none" tool, a blank-provider tool, two
+# tools sharing one root, a ~-prefixed root, and a tool with no root at all.
+cfg_fixture() {
+  cat > "$1" <<'JSON'
+{
+  "version": "2.0",
+  "paths": {
+    "framework_root": "~/fixture_fw",
+    "notes_root": "~/fixture_notes"
+  },
+  "tools": {
+    "meetings": { "provider": "granola", "root": "~/shared_sink", "skills": ["granola-import", "meeting-summarize"] },
+    "notes":    { "provider": "filesystem", "root": "~/shared_sink", "skills": [] },
+    "tasks":    { "provider": "linear" },
+    "home":     { "provider": "filesystem", "root": "${HOME}/x/y" },
+    "off":      { "provider": "none" },
+    "blank":    { "provider": "" }
+  }
+}
+JSON
 }
 
-t_cfg_missing_slots() {
-  local c="$WORK/cfg_noslots.json"
-  echo '{"paths":{}}' > "$c"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_MEETING_SOURCE"')" "missing slots: meeting_source none"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_TRACKER"')"        "missing slots: tracker none"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_LOGGER"')"         "missing slots: logger none"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_EMAIL"')"          "missing slots: email none"
+t_cfg_framework_paths() {
+  local c="$WORK/cfg_paths.json"; cfg_fixture "$c"
+  assert_eq "$HOME/fixture_fw"                 "$(load_and_echo "$c" 'echo "$PM_FRAMEWORK_ROOT"')" "framework_root from fixture, tilde-expanded"
+  assert_eq "$HOME/fixture_notes"              "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')"     "notes_root from fixture, tilde-expanded"
+  assert_eq "$HOME/fixture_fw/registry.jsonl"  "$(load_and_echo "$c" 'echo "$PM_REGISTRY"')"       "registry derived from framework_root"
+  assert_eq "$HOME/fixture_fw/sessions"        "$(load_and_echo "$c" 'echo "$PM_SESSIONS_DIR"')"   "sessions_dir derived from framework_root"
 }
 
-t_cfg_tilde() {
-  local c="$WORK/cfg_tilde.json"
-  echo '{"paths":{"notes_root":"~/pm_notes_tilde"}}' > "$c"
-  assert_eq "$HOME/pm_notes_tilde" "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')" "~-prefixed notes_root expands"
+t_cfg_framework_paths_defaults() {
+  local c="$WORK/cfg_paths_def.json"
+  echo '{"version":"2.0","tools":{}}' > "$c"   # no paths.* at all
+  assert_eq "$HOME/.claude/pm"                        "$(load_and_echo "$c" 'echo "$PM_FRAMEWORK_ROOT"')" "framework_root default"
+  assert_eq "$HOME/Code/logs/PersonalAssistant"       "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')"     "notes_root default"
+  assert_eq "$HOME/.claude/pm/registry.jsonl"         "$(load_and_echo "$c" 'echo "$PM_REGISTRY"')"       "registry default"
+  assert_eq "$HOME/.claude/pm/sessions"               "$(load_and_echo "$c" 'echo "$PM_SESSIONS_DIR"')"   "sessions_dir default"
 }
 
-t_cfg_homevar() {
-  local c="$WORK/cfg_home.json"
-  echo '{"paths":{"notes_root":"${HOME}/pm_notes_home"}}' > "$c"
-  assert_eq "$HOME/pm_notes_home" "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')" "\${HOME} notes_root expands"
+t_cfg_tools_list() {
+  local c="$WORK/cfg_list.json"; cfg_fixture "$c"
+  # order-independent: sort both sides before comparing.
+  local got; got="$(load_and_echo "$c" 'pm_tools' | sort | tr '\n' ' ')"
+  assert_eq "blank home meetings notes off tasks " "$got" "pm_tools lists exactly the fixture's tool names"
 }
 
-t_cfg_slot_enabled() {
-  local c="$WORK/cfg_enabled.json"
-  echo '{"slots":{"meeting_source":{"tool":"m"},"tracker":{"tool":"none"},"logger":{"tool":""},"email":{"tool":"e"}}}' > "$c"
-  assert_eq "yes" "$(load_and_echo "$c" 'pm_slot_enabled meeting_source && echo yes || echo no')" "slot_enabled: meeting filled -> yes"
-  assert_eq "no"  "$(load_and_echo "$c" 'pm_slot_enabled tracker && echo yes || echo no')"        "slot_enabled: tracker none -> no"
-  assert_eq "no"  "$(load_and_echo "$c" 'pm_slot_enabled logger && echo yes || echo no')"         "slot_enabled: logger empty -> no"
-  assert_eq "yes" "$(load_and_echo "$c" 'pm_slot_enabled email && echo yes || echo no')"          "slot_enabled: email filled -> yes"
-  assert_eq "yes" "$(load_and_echo "$c" 'pm_slot_enabled notes_store && echo yes || echo no')"    "slot_enabled: notes_store always -> yes"
+t_cfg_tool_defined() {
+  local c="$WORK/cfg_defined.json"; cfg_fixture "$c"
+  assert_eq "yes" "$(load_and_echo "$c" 'pm_tool_defined tasks && echo yes || echo no')"   "defined: filled provider -> yes"
+  assert_eq "no"  "$(load_and_echo "$c" 'pm_tool_defined off && echo yes || echo no')"     "defined: \"none\" provider -> no"
+  assert_eq "no"  "$(load_and_echo "$c" 'pm_tool_defined blank && echo yes || echo no')"   "defined: blank provider -> no"
+  assert_eq "no"  "$(load_and_echo "$c" 'pm_tool_defined ghost && echo yes || echo no')"   "defined: absent tool -> no"
 }
 
-t_cfg_empty_slot; t_cfg_missing_slots; t_cfg_tilde; t_cfg_homevar; t_cfg_slot_enabled
+t_cfg_tool_provider() {
+  local c="$WORK/cfg_provider.json"; cfg_fixture "$c"
+  assert_eq "granola" "$(load_and_echo "$c" 'pm_tool_provider meetings')" "provider: filled value"
+  assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider off')"      "provider: explicit none"
+  assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider blank')"    "provider: blank -> none"
+  assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider ghost')"    "provider: absent -> none"
+}
+
+t_cfg_tool_root() {
+  local c="$WORK/cfg_root.json"; cfg_fixture "$c"
+  assert_eq "$HOME/shared_sink" "$(load_and_echo "$c" 'pm_tool_root meetings')" "root: tilde-expanded"
+  # shared-root: two distinct tools resolve to the same folder.
+  assert_eq "$HOME/shared_sink" "$(load_and_echo "$c" 'pm_tool_root notes')"    "root: second tool resolves same shared folder"
+  assert_eq "$HOME/x/y"         "$(load_and_echo "$c" 'pm_tool_root home')"     "root: \${HOME} expanded"
+  assert_eq ""                  "$(load_and_echo "$c" 'pm_tool_root tasks')"    "root: unset -> empty"
+  assert_eq ""                  "$(load_and_echo "$c" 'pm_tool_root ghost')"    "root: absent tool -> empty"
+}
+
+t_cfg_tool_skills() {
+  local c="$WORK/cfg_skills.json"; cfg_fixture "$c"
+  local got; got="$(load_and_echo "$c" 'pm_tool_skills meetings' | tr '\n' ' ')"
+  assert_eq "granola-import meeting-summarize " "$got"                         "skills: listed one per line"
+  assert_eq "" "$(load_and_echo "$c" 'pm_tool_skills notes')"                  "skills: empty array -> empty"
+  assert_eq "" "$(load_and_echo "$c" 'pm_tool_skills tasks')"                  "skills: absent -> empty"
+}
+
+t_cfg_tool_root_or_notes() {
+  local c="$WORK/cfg_ron.json"; cfg_fixture "$c"
+  assert_eq "$HOME/shared_sink"   "$(load_and_echo "$c" 'pm_tool_root_or_notes meetings')" "root_or_notes: own root wins"
+  assert_eq "$HOME/fixture_notes" "$(load_and_echo "$c" 'pm_tool_root_or_notes tasks')"    "root_or_notes: unset root falls back to PM_NOTES_ROOT"
+}
+
+t_cfg_tool_field() {
+  local c="$WORK/cfg_field.json"; cfg_fixture "$c"
+  assert_eq "granola" "$(load_and_echo "$c" 'pm_tool_field meetings provider')" "field: returns arbitrary sub-key"
+  assert_eq ""        "$(load_and_echo "$c" 'pm_tool_field tasks root')"        "field: absent sub-key -> empty"
+}
+
+# pm_load_config's failure contract: a missing OR malformed config returns 1 (never a
+# false success). --quiet stays silent; non-quiet prints a hint to stderr.
+t_cfg_load_missing() {
+  local c="$WORK/cfg_absent.json"   # never created
+  local rc err
+  PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config >/dev/null 2>&1"; rc=$?
+  assert_eq 1 "$rc" "load: missing config returns 1"
+  PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet >/dev/null 2>&1"; rc=$?
+  assert_eq 1 "$rc" "load: missing config --quiet returns 1"
+  err="$(PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet" 2>&1 >/dev/null)"
+  assert_eq "" "$err" "load: missing config --quiet is silent on stderr"
+  err="$(PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config" 2>&1 >/dev/null)"
+  assert_contains "$err" "no config at" "load: missing config non-quiet prints hint"
+}
+
+t_cfg_load_malformed() {
+  local c="$WORK/cfg_bad.json"; printf '{ bad json' > "$c"
+  local rc
+  PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config >/dev/null 2>&1"; rc=$?
+  assert_eq 1 "$rc" "load: malformed config returns 1"
+  # explicit W1 contract: malformed config must NOT report success.
+  if PM_CONFIG="$c" bash -c "source '$REPO/lib/config.sh'; pm_load_config >/dev/null 2>&1"; then
+    fail "load: malformed config does NOT return 0"
+  else
+    pass "load: malformed config does NOT return 0"
+  fi
+}
+
+# W2 + set -u guard: a bare assignment x=$(pm_tools) under `set -euo pipefail` with a bad
+# config must not abort the subshell — it completes with x empty.
+t_cfg_set_e_accessor() {
+  local c="$WORK/cfg_bad_sete.json"; printf '{ bad json' > "$c"
+  local out rc
+  out="$(PM_CONFIG="$c" bash -c "set -euo pipefail; source '$REPO/lib/config.sh'; pm_load_config --quiet || true; x=\$(pm_tools); echo survived:[\$x]" 2>/dev/null)"; rc=$?
+  assert_eq 0 "$rc"            "set -e: x=\$(pm_tools) on bad config does not abort subshell"
+  assert_eq "survived:[]" "$out" "set -e: subshell completes, x is empty"
+}
+
+t_cfg_framework_paths; t_cfg_framework_paths_defaults; t_cfg_tools_list; t_cfg_tool_defined
+t_cfg_tool_provider; t_cfg_tool_root; t_cfg_tool_skills; t_cfg_tool_root_or_notes; t_cfg_tool_field
+t_cfg_load_missing; t_cfg_load_malformed; t_cfg_set_e_accessor
 
 # ── install.sh idempotency + dry-run ─────────────────────────────────────────────
 section "install.sh"

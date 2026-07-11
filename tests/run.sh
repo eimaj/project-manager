@@ -256,49 +256,105 @@ t_sc_append; t_sc_update_inplace; t_sc_junk_line; t_sc_collab_seed_preserve; t_s
 t_sc_autoship_seed_preserve; t_sc_autoship_flag_and_degrades
 t_sc_unknown_fields_preserved; t_sc_empty_input_no_clobber; t_sc_fresh_created_present; t_sc_malformed_prior_new
 
-# ── config.sh slot resolution ────────────────────────────────────────────────────
+# ── config.sh named-tool resolver ─────────────────────────────────────────────────
 section "config.sh"
 
+# Source config.sh, load the fixture, then run the caller snippet in the SAME shell so
+# the framework-path exports and $PM_CONFIG_RESOLVED are visible to the accessors.
 load_and_echo() { PM_CONFIG="$1" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet >/dev/null 2>&1; $2"; }
 
-t_cfg_empty_slot() {
-  local c="$WORK/cfg_empty.json"
-  echo '{"slots":{"meeting_source":{"tool":""},"tracker":{"tool":"x"},"logger":{"tool":"x"},"email":{"tool":"x"}}}' > "$c"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_MEETING_SOURCE"')" "empty slot tool -> none"
+# A representative v2 fixture: filled tools, a "none" tool, a blank-provider tool, two
+# tools sharing one root, a ~-prefixed root, and a tool with no root at all.
+cfg_fixture() {
+  cat > "$1" <<'JSON'
+{
+  "version": "2.0",
+  "paths": {
+    "framework_root": "~/fixture_fw",
+    "notes_root": "~/fixture_notes"
+  },
+  "tools": {
+    "meetings": { "provider": "granola", "root": "~/shared_sink", "skills": ["granola-import", "meeting-summarize"] },
+    "notes":    { "provider": "filesystem", "root": "~/shared_sink", "skills": [] },
+    "tasks":    { "provider": "linear" },
+    "off":      { "provider": "none" },
+    "blank":    { "provider": "" }
+  }
+}
+JSON
 }
 
-t_cfg_missing_slots() {
-  local c="$WORK/cfg_noslots.json"
-  echo '{"paths":{}}' > "$c"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_MEETING_SOURCE"')" "missing slots: meeting_source none"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_TRACKER"')"        "missing slots: tracker none"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_LOGGER"')"         "missing slots: logger none"
-  assert_eq "none" "$(load_and_echo "$c" 'echo "$PM_EMAIL"')"          "missing slots: email none"
+t_cfg_framework_paths() {
+  local c="$WORK/cfg_paths.json"; cfg_fixture "$c"
+  assert_eq "$HOME/fixture_fw"                 "$(load_and_echo "$c" 'echo "$PM_FRAMEWORK_ROOT"')" "framework_root from fixture, tilde-expanded"
+  assert_eq "$HOME/fixture_notes"              "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')"     "notes_root from fixture, tilde-expanded"
+  assert_eq "$HOME/fixture_fw/registry.jsonl"  "$(load_and_echo "$c" 'echo "$PM_REGISTRY"')"       "registry derived from framework_root"
+  assert_eq "$HOME/fixture_fw/sessions"        "$(load_and_echo "$c" 'echo "$PM_SESSIONS_DIR"')"   "sessions_dir derived from framework_root"
 }
 
-t_cfg_tilde() {
-  local c="$WORK/cfg_tilde.json"
-  echo '{"paths":{"notes_root":"~/pm_notes_tilde"}}' > "$c"
-  assert_eq "$HOME/pm_notes_tilde" "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')" "~-prefixed notes_root expands"
+t_cfg_framework_paths_defaults() {
+  local c="$WORK/cfg_paths_def.json"
+  echo '{"version":"2.0","tools":{}}' > "$c"   # no paths.* at all
+  assert_eq "$HOME/.claude/pm"                        "$(load_and_echo "$c" 'echo "$PM_FRAMEWORK_ROOT"')" "framework_root default"
+  assert_eq "$HOME/Code/logs/PersonalAssistant"       "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')"     "notes_root default"
+  assert_eq "$HOME/.claude/pm/registry.jsonl"         "$(load_and_echo "$c" 'echo "$PM_REGISTRY"')"       "registry default"
+  assert_eq "$HOME/.claude/pm/sessions"               "$(load_and_echo "$c" 'echo "$PM_SESSIONS_DIR"')"   "sessions_dir default"
 }
 
-t_cfg_homevar() {
-  local c="$WORK/cfg_home.json"
-  echo '{"paths":{"notes_root":"${HOME}/pm_notes_home"}}' > "$c"
-  assert_eq "$HOME/pm_notes_home" "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')" "\${HOME} notes_root expands"
+t_cfg_tools_list() {
+  local c="$WORK/cfg_list.json"; cfg_fixture "$c"
+  # order-independent: sort both sides before comparing.
+  local got; got="$(load_and_echo "$c" 'pm_tools' | sort | tr '\n' ' ')"
+  assert_eq "blank meetings notes off tasks " "$got" "pm_tools lists exactly the fixture's tool names"
 }
 
-t_cfg_slot_enabled() {
-  local c="$WORK/cfg_enabled.json"
-  echo '{"slots":{"meeting_source":{"tool":"m"},"tracker":{"tool":"none"},"logger":{"tool":""},"email":{"tool":"e"}}}' > "$c"
-  assert_eq "yes" "$(load_and_echo "$c" 'pm_slot_enabled meeting_source && echo yes || echo no')" "slot_enabled: meeting filled -> yes"
-  assert_eq "no"  "$(load_and_echo "$c" 'pm_slot_enabled tracker && echo yes || echo no')"        "slot_enabled: tracker none -> no"
-  assert_eq "no"  "$(load_and_echo "$c" 'pm_slot_enabled logger && echo yes || echo no')"         "slot_enabled: logger empty -> no"
-  assert_eq "yes" "$(load_and_echo "$c" 'pm_slot_enabled email && echo yes || echo no')"          "slot_enabled: email filled -> yes"
-  assert_eq "yes" "$(load_and_echo "$c" 'pm_slot_enabled notes_store && echo yes || echo no')"    "slot_enabled: notes_store always -> yes"
+t_cfg_tool_defined() {
+  local c="$WORK/cfg_defined.json"; cfg_fixture "$c"
+  assert_eq "yes" "$(load_and_echo "$c" 'pm_tool_defined tasks && echo yes || echo no')"   "defined: filled provider -> yes"
+  assert_eq "no"  "$(load_and_echo "$c" 'pm_tool_defined off && echo yes || echo no')"     "defined: \"none\" provider -> no"
+  assert_eq "no"  "$(load_and_echo "$c" 'pm_tool_defined blank && echo yes || echo no')"   "defined: blank provider -> no"
+  assert_eq "no"  "$(load_and_echo "$c" 'pm_tool_defined ghost && echo yes || echo no')"   "defined: absent tool -> no"
 }
 
-t_cfg_empty_slot; t_cfg_missing_slots; t_cfg_tilde; t_cfg_homevar; t_cfg_slot_enabled
+t_cfg_tool_provider() {
+  local c="$WORK/cfg_provider.json"; cfg_fixture "$c"
+  assert_eq "granola" "$(load_and_echo "$c" 'pm_tool_provider meetings')" "provider: filled value"
+  assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider off')"      "provider: explicit none"
+  assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider blank')"    "provider: blank -> none"
+  assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider ghost')"    "provider: absent -> none"
+}
+
+t_cfg_tool_root() {
+  local c="$WORK/cfg_root.json"; cfg_fixture "$c"
+  assert_eq "$HOME/shared_sink" "$(load_and_echo "$c" 'pm_tool_root meetings')" "root: tilde-expanded"
+  # shared-root: two distinct tools resolve to the same folder.
+  assert_eq "$HOME/shared_sink" "$(load_and_echo "$c" 'pm_tool_root notes')"    "root: second tool resolves same shared folder"
+  assert_eq ""                  "$(load_and_echo "$c" 'pm_tool_root tasks')"    "root: unset -> empty"
+  assert_eq ""                  "$(load_and_echo "$c" 'pm_tool_root ghost')"    "root: absent tool -> empty"
+}
+
+t_cfg_tool_skills() {
+  local c="$WORK/cfg_skills.json"; cfg_fixture "$c"
+  local got; got="$(load_and_echo "$c" 'pm_tool_skills meetings' | tr '\n' ' ')"
+  assert_eq "granola-import meeting-summarize " "$got"                         "skills: listed one per line"
+  assert_eq "" "$(load_and_echo "$c" 'pm_tool_skills notes')"                  "skills: empty array -> empty"
+  assert_eq "" "$(load_and_echo "$c" 'pm_tool_skills tasks')"                  "skills: absent -> empty"
+}
+
+t_cfg_tool_root_or_notes() {
+  local c="$WORK/cfg_ron.json"; cfg_fixture "$c"
+  assert_eq "$HOME/shared_sink"   "$(load_and_echo "$c" 'pm_tool_root_or_notes meetings')" "root_or_notes: own root wins"
+  assert_eq "$HOME/fixture_notes" "$(load_and_echo "$c" 'pm_tool_root_or_notes tasks')"    "root_or_notes: unset root falls back to PM_NOTES_ROOT"
+}
+
+t_cfg_tool_field() {
+  local c="$WORK/cfg_field.json"; cfg_fixture "$c"
+  assert_eq "granola" "$(load_and_echo "$c" 'pm_tool_field meetings provider')" "field: returns arbitrary sub-key"
+  assert_eq ""        "$(load_and_echo "$c" 'pm_tool_field tasks root')"        "field: absent sub-key -> empty"
+}
+
+t_cfg_framework_paths; t_cfg_framework_paths_defaults; t_cfg_tools_list; t_cfg_tool_defined
+t_cfg_tool_provider; t_cfg_tool_root; t_cfg_tool_skills; t_cfg_tool_root_or_notes; t_cfg_tool_field
 
 # ── install.sh idempotency + dry-run ─────────────────────────────────────────────
 section "install.sh"

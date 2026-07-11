@@ -36,7 +36,7 @@ The framework imposes no fixed role vocabulary — your tools are whatever names
 ## Framework facts (shared across all four pm-* skills)
 
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root (`<session-id>` via `{{framework_root}}/lib/session.sh`). **This skill reads it** (does not write it).
-- **Named tools:** `{{framework_root}}/lib/config.sh` (`pm_load_config`) exposes the tool registry; the guard + capture branch on `pm_tool_defined logs` + `pm_tool_defined todo`. Per-project scoping lives in `.pm/config.json` → `.tool_refs.<name>`. For Jamie's setup `logs`→clog and `todo`→crrt.
+- **Named tools:** `{{framework_root}}/lib/config.sh` (`pm_load_config`) exposes the tool registry; the guard + capture branch on `pm_tool_defined logs` + `pm_tool_defined todo`. Each tool resolves to its configured provider via `pm_tool_provider <name>`. Per-project scoping lives in `.pm/config.json` → `.tool_refs.<name>`.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
 - **History lives in `tool:logs`; narrative in the `tool:todo` journal; the handoff lives in `LAST-SESSION.md`.** There is **no JOURNAL.md** — `LAST-SESSION.md` carries one block per session (a forward handoff, not a log).
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
@@ -52,7 +52,7 @@ SID=$("{{framework_root}}/lib/session.sh")        # same resolver pm-start used 
 ROOT="$(cat "{{framework_root}}/sessions/$SID" 2>/dev/null)"
 test -f "$ROOT/.pm/config.json" || { echo "No active PM project this session — run /pm-start @<path> first."; exit 1; }
 NAME=$(jq -r '.name' "$ROOT/.pm/config.json")
-TODO_SCOPE=$(jq -r '.tool_refs.todo // ""' "$ROOT/.pm/config.json")   # crrt tag for this project
+TODO_SCOPE=$(jq -r '.tool_refs.todo // ""' "$ROOT/.pm/config.json")   # todo tag/list for this project
 KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 ```
 
@@ -60,33 +60,32 @@ KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 
 **Same guard as `/pm-status`.** Both halves guarded independently:
 
-1. **`tool:logs` sweep** — **if `pm_tool_defined logs` is false:** skip and print "tool:logs not defined — skipping hygiene sweep." **Else:** invoke the `logs` provider's backfill sweep — for Jamie's `clog`, run [`clog-sweep`](../clog-sweep/SKILL.md) ("clog it"): scan the session for unlogged state-changes and auto-write the missing entries with paired LEARNINGs. _related: `pm_tool_skills logs`._
-2. **`tool:todo` hygiene** — **if `pm_tool_defined todo` is false:** skip and print "tool:todo not defined — skipping task hygiene." **Else:** update the `todo` provider (Jamie: `crrt`) — complete tasks finished this session, add new tasks surfaced, set due dates where known. Tag new tasks with `$TODO_SCOPE`.
+1. **`tool:logs` sweep** — **if `pm_tool_defined logs` is false:** skip and print "tool:logs not defined — skipping hygiene sweep." **Else:** invoke the `logs` tool's configured provider in backfill mode (its sweep/backfill skill — see `pm_tool_skills logs`): scan the session for unlogged state-changes and auto-write the missing entries. _related: `pm_tool_skills logs`._
+2. **`tool:todo` hygiene** — **if `pm_tool_defined todo` is false:** skip and print "tool:todo not defined — skipping task hygiene." **Else:** update the `todo` tool's configured provider — complete tasks finished this session, add new tasks surfaced, set due dates where known. Tag new tasks with `$TODO_SCOPE`.
 
 ### Step 3 — Summarize the session's log for this project — `tool:logs`
 
 - **If `pm_tool_defined logs` is false:** summarize from your own memory of the session (what got done, decisions, anything left open) and note "tool:logs not defined — summary from session memory only". This summary feeds Steps 4 and 5.
-- **Else:** read today's entries from the `logs` provider (Jamie: `clog`) and filter to this project (`$TODO_SCOPE` / `$KEYWORDS`). Resolve the log directory from clog's own config (robust if logs are relocated):
+- **Else:** read this session's entries from the `logs` tool's configured provider and filter to this project (`$TODO_SCOPE` / `$KEYWORDS`). Resolve the log store from the tool's `root` (falling back to `$PM_NOTES_ROOT`):
 
   ```bash
-  CLOG_CFG="$HOME/.config/clog/config.yaml"
-  LOG_ROOT=$(grep '^log_root:' "$CLOG_CFG" 2>/dev/null | cut -d'"' -f2); LOG_ROOT="${LOG_ROOT/\$\{HOME\}/$HOME}"
-  LOG_SUBDIR=$(grep '^log_subdir:' "$CLOG_CFG" 2>/dev/null | cut -d'"' -f2)
-  TODAY_LOG="${LOG_ROOT:-$(pm_tool_root_or_notes logs)}/${LOG_SUBDIR:-claude}/$(date +%Y%m%d).jsonl"
+  LOG_ROOT="$(pm_tool_root_or_notes logs)"        # the logs tool's store (its root, else $PM_NOTES_ROOT)
+  # Read today's entries under $LOG_ROOT in the provider's own layout/index
+  # (e.g. a dated file or the provider's search skill — see pm_tool_skills logs).
   ```
 
-  Produce a short summary from `$TODAY_LOG`: what got done, decisions made, anything left open.
+  Produce a short summary from the log entries: what got done, decisions made, anything left open.
 
 ### Step 4 — Write a tagged journal entry — `tool:todo`
 
 - **If `pm_tool_defined todo` is false:** skip with a note — there is no journal sink. (The `LAST-SESSION.md` block in Step 5 is the durable record.)
-- **Else:** record a one-line journal note via the `todo` provider (Jamie: `crrt`), tagged with `$TODO_SCOPE`:
+- **Else:** record a one-line journal note via the `todo` tool's configured provider, tagged with `$TODO_SCOPE`, e.g. a note reading:
 
-  ```bash
-  crrt note "pm-end ${NAME}: <one-line summary of the session> #${TODO_SCOPE}"
+  ```
+  pm-end ${NAME}: <one-line summary of the session> #${TODO_SCOPE}
   ```
 
-  Keep it one line (per crrt house style). Add a second one-line note only for a distinct learning or follow-up. _related: `pm_tool_skills todo`._
+  Keep it one line. Add a second one-line note only for a distinct learning or follow-up. _related: `pm_tool_skills todo`._
 
 ### Step 5 — Update this session's handoff block in LAST-SESSION.md
 
@@ -170,7 +169,7 @@ fi
 ### Step 7 — Log it — `tool:logs`
 
 - **If `pm_tool_defined logs` is false:** skip with a note.
-- **Else:** record via the `logs` provider (Jamie: `clog`): `clog ACTION "pm-end: wrapped '<name>' — journal logged, LAST-SESSION.md updated"`.
+- **Else:** record via the `logs` tool's configured provider an action entry like: `pm-end: wrapped '<name>' — journal logged, LAST-SESSION.md updated`.
 
 ### Step 8 — Release the session color (optional)
 

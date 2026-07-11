@@ -58,7 +58,7 @@ name automatically.
    done
    ```
 
-   Ask one question per defined tool, phrased with its provider — e.g. "how is this project identified in `tool:tasks` (linear)?" (a Linear project), "`tool:meetings` (granola)?" (a Granola folder), "`tool:todo` (crrt)?" (a crrt tag), "`tool:email` (ms365-outlook)?" (a label/folder), "`tool:github` (gh)?" (an `owner/repo`). A **blank answer skips** that tool → it falls back to keyword matching. Each answer becomes one `--tool-ref <name>=<value>` flag in Step 2.
+   Ask one question per defined tool, phrased with its provider — e.g. "how is this project identified in `tool:tasks` (its `$(pm_tool_provider tasks)` provider)?" (a tracker project), "`tool:meetings`?" (a meetings folder/scope), "`tool:todo`?" (a todo tag/list), "`tool:email`?" (a label/folder), "`tool:github`?" (an `owner/repo`). A **blank answer skips** that tool → it falls back to keyword matching. Each answer becomes one `--tool-ref <name>=<value>` flag in Step 2.
 3. **Team members** (context only; not used for filtering) — optional.
 4. **Keywords / aliases** (for `tool:logs` search + fallback meeting/email match) — optional.
 5. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
@@ -99,10 +99,10 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
    "{{framework_root}}/lib/scaffold.sh" \
      --name "<name>" \
      --root "<absolute root>" \
-     --tool-ref "tasks=<Linear project or omit>" \
-     --tool-ref "meetings=<Granola folder or omit>" \
-     --tool-ref "todo=<crrt tag or omit>" \
-     --tool-ref "email=<Outlook label/folder or omit>" \
+     --tool-ref "tasks=<tracker project or omit>" \
+     --tool-ref "meetings=<meetings folder/scope or omit>" \
+     --tool-ref "todo=<todo tag/list or omit>" \
+     --tool-ref "email=<email label/folder or omit>" \
      --tool-ref "github=<owner/repo or omit>" \
      --team "<comma,separated or blank>" \
      --keywords "<comma,separated or blank>" \
@@ -123,7 +123,7 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
 
 5. **Log it — `tool:logs`.**
    - **If `pm_tool_defined logs` is false:** skip with a note "tool:logs not defined — skipping init log entry."
-   - **Else:** record a one-line action via the `logs` provider (Jamie: `clog`), e.g. `clog ACTION "pm-init: onboarded '<name>' at <root> — registry upserted"`.
+   - **Else:** record a one-line action via the `logs` tool's configured provider, e.g. an entry reading `pm-init: onboarded '<name>' at <root> — registry upserted`.
 
 6. **Report & open.** Print the file list, then immediately run [`/pm-start`](../pm-start/SKILL.md) against `<root>` to open the project in this session — set the marker, run live sync, print the briefing, and end with the `/rename` + `/color` session-branding block. Init flows straight into a working session; the user does not run `/pm-start` separately.
 
@@ -132,7 +132,7 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
 - **Re-init is safe.** Re-running edits `config.json` and upserts the registry but never clobbers `CONTEXT.md`, `CALENDAR.md`, or `meetings.jsonl`.
 - **Do not reimplement** any tool's live logic here — init only writes config + seed files. Live data comes at `/pm-start`.
 - **Only prompt for defined tools** — iterate `pm_tools` + `pm_tool_defined`; never ask for a tool the registry doesn't define.
-- **Blank optionals stay blank** and become TODOs in `CONTEXT.md`. Never fabricate a `tool_refs` value (a Linear project, a Granola folder, …).
+- **Blank optionals stay blank** and become TODOs in `CONTEXT.md`. Never fabricate a `tool_refs` value (a tracker project, a meetings folder, …).
 - **No commit/push.** Only writes under `<root>` and the registry.
 
 ## Signal Keywords

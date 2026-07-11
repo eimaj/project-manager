@@ -37,9 +37,9 @@ time, adjust the `tool:<name>` references below to match.
 
 - **Project identity = its folder root path.** Registry: `{{framework_root}}/registry.jsonl` (deduped by `root`).
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root path, where `<session-id>` comes from `{{framework_root}}/lib/session.sh`. **This skill writes it.** Concurrent sessions each hold their own.
-- **Named tools, resolved at runtime.** `lib/config.sh` (`pm_load_config`) exposes the tool registry; each step branches on `pm_tool_defined <name>` and degrades with a note when a tool is undefined. Per-project scoping for a tool lives in `.pm/config.json` → `.tool_refs.<name>` (how THIS project is identified inside that tool's backend). For Jamie's setup the default providers are `meetings`→granola, `calendar`→ms365-calendar, `email`→ms365-outlook, `tasks`→linear, `github`→gh, `todo`→crrt, `logs`→clog.
+- **Named tools, resolved at runtime.** `lib/config.sh` (`pm_load_config`) exposes the tool registry; each step branches on `pm_tool_defined <name>` and degrades with a note when a tool is undefined. Each tool's concrete backend is its **configured provider** (`pm_tool_provider <name>`) — the skills never hard-code one. Per-project scoping for a tool lives in `.pm/config.json` → `.tool_refs.<name>` (how THIS project is identified inside that tool's backend).
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
-- **Meetings = pointers, not copies.** The meeting archive lives under `pm_tool_root_or_notes meetings` (Jamie: `~/Code/logs/meetings`; falls back to `$PM_NOTES_ROOT` when the `meetings` tool has no explicit `root`). The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
+- **Meetings = pointers, not copies.** The meeting archive lives under `pm_tool_root_or_notes meetings` (the `meetings` tool's configured `root`, falling back to `$PM_NOTES_ROOT` when it has no explicit `root`). The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) this skill renders as a quick-reference (Step 6). A local lookup index read from config — no live/MCP call at read time. Absent/empty = TODO.
 
 ## Steps
@@ -85,12 +85,12 @@ Load config into shell vars for later steps:
 ```bash
 # Per-project tool refs — how THIS project is identified inside each tool's backend.
 # A blank ref => that tool falls back to keyword matching against $KEYWORDS.
-MEETINGS_SCOPE=$(jq -r '.tool_refs.meetings // ""' "$ROOT/.pm/config.json")  # e.g. Granola folder
+MEETINGS_SCOPE=$(jq -r '.tool_refs.meetings // ""' "$ROOT/.pm/config.json")  # e.g. a meetings-provider folder
 CALENDAR_SCOPE=$(jq -r '.tool_refs.calendar // ""' "$ROOT/.pm/config.json")  # e.g. calendar/category filter
-EMAIL_SCOPE=$(jq -r '.tool_refs.email    // ""' "$ROOT/.pm/config.json")     # e.g. Outlook label/folder
-TASKS_SCOPE=$(jq -r '.tool_refs.tasks    // ""' "$ROOT/.pm/config.json")     # e.g. Linear project
+EMAIL_SCOPE=$(jq -r '.tool_refs.email    // ""' "$ROOT/.pm/config.json")     # e.g. an email label/folder
+TASKS_SCOPE=$(jq -r '.tool_refs.tasks    // ""' "$ROOT/.pm/config.json")     # e.g. a tracker project
 GITHUB_SCOPE=$(jq -r '.tool_refs.github  // ""' "$ROOT/.pm/config.json")     # e.g. owner/repo
-TODO_SCOPE=$(jq -r '.tool_refs.todo      // ""' "$ROOT/.pm/config.json")     # e.g. crrt tag
+TODO_SCOPE=$(jq -r '.tool_refs.todo      // ""' "$ROOT/.pm/config.json")     # e.g. a todo tag/list
 KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 NAME=$(jq -r '.name // ""' "$ROOT/.pm/config.json")
 SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
@@ -101,9 +101,9 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 
 ### Step 2 — Meeting catch-up (LIVE) — `tool:meetings`
 
-- **If `pm_tool_defined meetings` is false:** skip meeting catch-up entirely. Print: "tool:meetings not defined — skipping meeting catch-up (run /granola-import by hand)." Do not attempt any meeting fetch.
-- **Else:** run the catch-up **inline in the main session** — MCP-backed meeting tools can fail silently inside subagents. For Jamie's provider (`granola`), invoke [`granola-import`](../granola-import/SKILL.md) (default no-args catch-up); this imports new meetings into the archive at `pm_tool_root_or_notes meetings` (transcripts + an `import-log.jsonl` index).
-  - _related: run `pm_tool_skills meetings` (e.g. /granola-import, /meeting-summarize, /pa-meeting-catchup) — surface these as discovery hints; never auto-invoke._
+- **If `pm_tool_defined meetings` is false:** skip meeting catch-up entirely. Print: "tool:meetings not defined — skipping meeting catch-up (import meetings by hand)." Do not attempt any meeting fetch.
+- **Else:** run the catch-up **inline in the main session** — MCP-backed meeting tools can fail silently inside subagents. Invoke the `meetings` tool's configured provider (a meeting-import/catch-up flow — see `pm_tool_skills meetings`) to import new meetings into the archive at `pm_tool_root_or_notes meetings` (transcripts + an import-log index).
+  - _related: run `pm_tool_skills meetings` — surface the tool's linked skills as discovery hints; never auto-invoke._
 
 ### Step 3 — Append new meeting pointers — `tool:meetings`
 
@@ -111,7 +111,7 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 - **Else:** map the project's meetings (those matching `$MEETINGS_SCOPE`, or falling back to keyword title match against `$KEYWORDS` when `$MEETINGS_SCOPE` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`). **The dedupe read and the append run inside one lock** so two concurrent tabs can't both read "id absent" and both append the same pointer:
 
   ```bash
-  ARCHIVE="$(pm_tool_root_or_notes meetings)"          # meetings archive root (Jamie: ~/Code/logs/meetings)
+  ARCHIVE="$(pm_tool_root_or_notes meetings)"          # meetings archive root (the meetings tool's root, else $PM_NOTES_ROOT)
   source "{{framework_root}}/lib/with-lock.sh"
   append_new_pointers() {
     EXISTING=$(jq -r '.meeting_id' "$ROOT/meetings.jsonl" 2>/dev/null | sort -u)   # read INSIDE the lock
@@ -127,14 +127,14 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 ### Step 3b — Inbox scan (LIVE) — `tool:email`
 
 - **If `pm_tool_defined email` is false:** skip the inbox scan and say so: "tool:email not defined — skipping inbox scan." Do not attempt any mail fetch.
-- **Else:** pull this project's action items / commitments / threads needing a response from the `email` provider (Jamie: `ms365-outlook`), filtered by `$EMAIL_SCOPE` (the project's label/folder/sender filter), falling back to keyword subject match against `$KEYWORDS` when `$EMAIL_SCOPE` is blank. **Run inline in the main session — MCP-backed mail tools can fail silently inside subagents.** Surface the results in the briefing (Step 6); do not write them to a project file. If `$EMAIL_SCOPE` is blank, note it as a TODO.
+- **Else:** pull this project's action items / commitments / threads needing a response from the `email` tool's configured provider, filtered by `$EMAIL_SCOPE` (the project's label/folder/sender filter), falling back to keyword subject match against `$KEYWORDS` when `$EMAIL_SCOPE` is blank. **Run inline in the main session — MCP-backed mail tools can fail silently inside subagents.** Surface the results in the briefing (Step 6); do not write them to a project file. If `$EMAIL_SCOPE` is blank, note it as a TODO.
 
 ### Step 4 — Regenerate CALENDAR.md — `tool:calendar` + `tool:tasks` + `tool:github`
 
 The **Synced** section (above the `<!-- PM:MANUAL -->` marker) is rebuilt from up to three tools, each guarded independently; **everything below the marker is preserved verbatim** (hand-added dated items). Build the Synced body as two sub-sections (keep them separate — do not interleave):
 
-- **Upcoming events** ← **`tool:calendar`** (Jamie: `ms365-calendar`). If `pm_tool_defined calendar` is false, render this sub-section as `_(tool:calendar not defined — no events synced)_`. Else pull forward-looking events scoped by `$CALENDAR_SCOPE` (fallback keyword match on `$KEYWORDS`).
-- **Due dates** ← **`tool:tasks`** (Jamie: `linear`) + **`tool:github`** (Jamie: `gh`) — two tools, merged and sorted by date. For each: if `pm_tool_defined <name>` is false, omit its lines and note "tool:<name> not defined — no due dates from it". Else pull forward-looking due dates — `tool:tasks` from `$TASKS_SCOPE` (Linear project), `tool:github` from `$GITHUB_SCOPE` (`owner/repo` issues/PRs with a due/milestone date).
+- **Upcoming events** ← **`tool:calendar`**. If `pm_tool_defined calendar` is false, render this sub-section as `_(tool:calendar not defined — no events synced)_`. Else pull forward-looking events from its configured provider, scoped by `$CALENDAR_SCOPE` (fallback keyword match on `$KEYWORDS`).
+- **Due dates** ← **`tool:tasks`** + **`tool:github`** — two tools, merged and sorted by date. For each: if `pm_tool_defined <name>` is false, omit its lines and note "tool:<name> not defined — no due dates from it". Else pull forward-looking due dates from each tool's provider — `tool:tasks` from `$TASKS_SCOPE` (its tracker project), `tool:github` from `$GITHUB_SCOPE` (`owner/repo` issues/PRs with a due/milestone date).
 
 If a tool's ref is blank, leave its lines as a TODO and still preserve Manual. **Run the read-modify-write under a lock** so concurrent tabs can't clobber each other's regeneration; write to a temp file and atomic-`mv` into place so a reader never sees a half-rewritten file:
 
@@ -166,10 +166,10 @@ grep -oE 'PM:SESSION [^ ]+ START' "$ROOT/LAST-SESSION.md" | grep -v " $SID " || 
 
 Then pull open work (each bullet guarded by `pm_tool_defined <name>`; omit with a note when undefined):
 
-- **`tool:todo`** (Jamie: `crrt`) — open tasks for this project, filtered by `$TODO_SCOPE`: `crrt list -f "$TODO_SCOPE"`. Undefined ⇒ "tool:todo not defined — tasks tracked manually in CONTEXT/notes".
-- **`tool:tasks`** (Jamie: `linear`) — open issues in `$TASKS_SCOPE` (the same tool that fed CALENDAR due dates, here for the open-work list).
-- **`tool:github`** (Jamie: `gh`) — open PRs / issues for `$GITHUB_SCOPE`.
-- **`tool:logs`** (Jamie: `clog`) — recent log entries matching `$KEYWORDS` (last few days) for recent decisions/actions; grep the JSONL under `pm_tool_root logs` or use the `clog-search` patterns.
+- **`tool:todo`** — open tasks for this project from its configured provider, filtered by `$TODO_SCOPE`. Undefined ⇒ "tool:todo not defined — tasks tracked manually in CONTEXT/notes".
+- **`tool:tasks`** — open issues in `$TASKS_SCOPE` (the same tool that fed CALENDAR due dates, here for the open-work list).
+- **`tool:github`** — open PRs / issues for `$GITHUB_SCOPE`.
+- **`tool:logs`** — recent log entries matching `$KEYWORDS` (last few days) for recent decisions/actions; read the log store under `pm_tool_root_or_notes logs` (or use the provider's search skill, see `pm_tool_skills logs`).
 
 ### Step 6 — Print the briefing
 
@@ -187,7 +187,7 @@ Print these sections in order (omit a section when its tool is undefined, with a
 ### Step 7 — Log it — `tool:logs`
 
 - **If `pm_tool_defined logs` is false:** skip with a note.
-- **Else:** record via the `logs` provider (Jamie: `clog`): `clog ACTION "pm-start: opened '<name>' — synced N new meetings, regenerated CALENDAR, briefed"`.
+- **Else:** record via the `logs` tool's configured provider an action entry like: `pm-start: opened '<name>' — synced N new meetings, regenerated CALENDAR, briefed`.
 
 ### Step 8 — Print the session branding block (paste to apply)
 

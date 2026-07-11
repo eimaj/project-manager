@@ -1,13 +1,22 @@
 ---
 name: pm-start
-description: Open a PM-framework project for the session — sets the per-session marker, runs LIVE sync (meeting catch-up + tracker due dates), and prints the morning briefing. Run once at session open. Use when starting work on a project, "pick up where I left off on X", or "/pm-start @path".
+description: Open a PM-framework project for the session — sets the per-session marker, runs LIVE sync (meeting catch-up, upcoming calendar, task + GitHub due dates, inbox), and prints the morning briefing. Run once at session open. Use when starting work on a project, "pick up where I left off on X", or "/pm-start @path".
 ---
 
 # pm-start — Open a Project (live sync + briefing)
 
-> Rendered by `/pm-generate` from a tool-agnostic template. The bracketed slot names
-> were filled from your mapping; the logic only ever talks to slots, and degrades when
-> a slot is `none`.
+> Rendered by `/pm-generate`. This skill addresses capabilities by **named tool**
+> (`tool:<name>`) and resolves each at runtime via `{{framework_root}}/lib/config.sh` —
+> only `{{framework_root}}` and `{{notes_root}}` are substituted at render time. A tool
+> that is undefined (or whose provider is `none`) degrades with a printed note.
+
+## Default tool names
+
+The framework imposes no fixed role vocabulary — your tools are whatever names
+`~/.config/pm/config.json` declares. This skill references the **default name set
+`/pm-generate` suggests**: `meetings` (past/recorded), `calendar` (future/upcoming),
+`email`, `tasks`, `github`, `todo`, `logs`, `notes`. If you renamed a tool at generate
+time, adjust the `tool:<name>` references below to match.
 
 ## Trigger
 
@@ -28,9 +37,9 @@ description: Open a PM-framework project for the session — sets the per-sessio
 
 - **Project identity = its folder root path.** Registry: `{{framework_root}}/registry.jsonl` (deduped by `root`).
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root path, where `<session-id>` comes from `{{framework_root}}/lib/session.sh`. **This skill writes it.** Concurrent sessions each hold their own.
-- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
+- **Named tools, resolved at runtime.** `lib/config.sh` (`pm_load_config`) exposes the tool registry; each step branches on `pm_tool_defined <name>` and degrades with a note when a tool is undefined. Per-project scoping for a tool lives in `.pm/config.json` → `.tool_refs.<name>` (how THIS project is identified inside that tool's backend). For Jamie's setup the default providers are `meetings`→granola, `calendar`→ms365-calendar, `email`→ms365-outlook, `tasks`→linear, `github`→gh, `todo`→crrt, `logs`→clog.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
-- **Meetings = pointers, not copies.** The meeting archive lives under `{{notes_root}}/meetings`. The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
+- **Meetings = pointers, not copies.** The meeting archive lives under `pm_tool_root_or_notes meetings` (Jamie: `~/Code/logs/meetings`; falls back to `$PM_NOTES_ROOT` when the `meetings` tool has no explicit `root`). The project's `meetings.jsonl` holds only pointers `{meeting_id, date, title, path}`.
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) this skill renders as a quick-reference (Step 6). A local lookup index read from config — no live/MCP call at read time. Absent/empty = TODO.
 
 ## Steps
@@ -38,6 +47,10 @@ description: Open a PM-framework project for the session — sets the per-sessio
 ### Step 1 — Resolve the project and write the session marker
 
 ```bash
+# Load the tool registry (accessors + framework paths) — required for every later step.
+source "{{framework_root}}/lib/config.sh"
+pm_load_config || { echo "pm: no config — run /pm-generate first."; exit 1; }
+
 # Source the resolver so the mint write below reuses its EXACT anchor derivation (no drift).
 . "{{framework_root}}/lib/session.sh"
 SID="$(pm_session_id)"                            # prefers CLAUDE_CODE_SESSION_ID (a real UUID)
@@ -70,10 +83,14 @@ printf '%s\n' "$ROOT" > "$MARKER"
 Load config into shell vars for later steps:
 
 ```bash
-MEETING_REF=$(jq -r '.meeting_ref // ""' "$ROOT/.pm/config.json")
-TRACKER_REF=$(jq -r '.tracker_ref // ""' "$ROOT/.pm/config.json")
-EMAIL_REF=$(jq -r '.email_ref // ""' "$ROOT/.pm/config.json")
-NOTES_REF=$(jq -r '.notes_ref // ""' "$ROOT/.pm/config.json")
+# Per-project tool refs — how THIS project is identified inside each tool's backend.
+# A blank ref => that tool falls back to keyword matching against $KEYWORDS.
+MEETINGS_SCOPE=$(jq -r '.tool_refs.meetings // ""' "$ROOT/.pm/config.json")  # e.g. Granola folder
+CALENDAR_SCOPE=$(jq -r '.tool_refs.calendar // ""' "$ROOT/.pm/config.json")  # e.g. calendar/category filter
+EMAIL_SCOPE=$(jq -r '.tool_refs.email    // ""' "$ROOT/.pm/config.json")     # e.g. Outlook label/folder
+TASKS_SCOPE=$(jq -r '.tool_refs.tasks    // ""' "$ROOT/.pm/config.json")     # e.g. Linear project
+GITHUB_SCOPE=$(jq -r '.tool_refs.github  // ""' "$ROOT/.pm/config.json")     # e.g. owner/repo
+TODO_SCOPE=$(jq -r '.tool_refs.todo      // ""' "$ROOT/.pm/config.json")     # e.g. crrt tag
 KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 NAME=$(jq -r '.name // ""' "$ROOT/.pm/config.json")
 SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
@@ -82,50 +99,58 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 
 (Session branding — `/rename` + `/color` — is printed at the end in Step 8 for the user to paste; slash commands can't be invoked programmatically.)
 
-### Step 2 — Meeting catch-up (LIVE) — meeting_source slot
+### Step 2 — Meeting catch-up (LIVE) — `tool:meetings`
 
-- **If the `meeting_source` slot is `none`:** **skip meeting catch-up entirely.** Print: "meeting_source slot is none — skipping meeting sync; meetings.jsonl will not be updated." Do not attempt any meeting fetch.
-- **Else:** pull recent meetings from **{{meeting_source}}** and archive them under `{{notes_root}}/meetings` (transcripts + an `import-log.jsonl` index). **Run inline in the main session — MCP-backed meeting tools can fail silently inside subagents.**
+- **If `pm_tool_defined meetings` is false:** skip meeting catch-up entirely. Print: "tool:meetings not defined — skipping meeting catch-up (run /granola-import by hand)." Do not attempt any meeting fetch.
+- **Else:** run the catch-up **inline in the main session** — MCP-backed meeting tools can fail silently inside subagents. For Jamie's provider (`granola`), invoke [`granola-import`](../granola-import/SKILL.md) (default no-args catch-up); this imports new meetings into the archive at `pm_tool_root_or_notes meetings` (transcripts + an `import-log.jsonl` index).
+  - _related: run `pm_tool_skills meetings` (e.g. /granola-import, /meeting-summarize, /pa-meeting-catchup) — surface these as discovery hints; never auto-invoke._
 
-### Step 3 — Append new meeting pointers — meeting_source slot
+### Step 3 — Append new meeting pointers — `tool:meetings`
 
-- **If the `meeting_source` slot is `none`:** skip (no source to map from).
-- **Else:** map the project's meetings (those matching `MEETING_REF`, or falling back to keyword title match against `KEYWORDS` when `MEETING_REF` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`). **The dedupe read and the append run inside one lock** so two concurrent tabs can't both read "id absent" and both append the same pointer:
+- **If `pm_tool_defined meetings` is false:** skip (no source to map from).
+- **Else:** map the project's meetings (those matching `$MEETINGS_SCOPE`, or falling back to keyword title match against `$KEYWORDS` when `$MEETINGS_SCOPE` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`). **The dedupe read and the append run inside one lock** so two concurrent tabs can't both read "id absent" and both append the same pointer:
 
   ```bash
+  ARCHIVE="$(pm_tool_root_or_notes meetings)"          # meetings archive root (Jamie: ~/Code/logs/meetings)
   source "{{framework_root}}/lib/with-lock.sh"
   append_new_pointers() {
     EXISTING=$(jq -r '.meeting_id' "$ROOT/meetings.jsonl" 2>/dev/null | sort -u)   # read INSIDE the lock
-    # for each candidate meeting whose meeting_id is NOT in $EXISTING, append one pointer line:
-    #   echo '{"meeting_id":..,"date":..,"title":..,"path":"{{notes_root}}/meetings/<file>"}' >> "$ROOT/meetings.jsonl"
+    # for each candidate meeting (scoped by $MEETINGS_SCOPE) whose meeting_id is NOT in $EXISTING, append one pointer:
+    #   echo '{"meeting_id":..,"date":..,"title":..,"path":"'"$ARCHIVE"'/<file>"}' >> "$ROOT/meetings.jsonl"
   }
   mkdir -p "$ROOT/.pm"
   with_lock "$ROOT/.pm/.meetings.lock" append_new_pointers
   ```
 
-  Never duplicate transcripts — store pointers only. If `MEETING_REF` is blank, note it as a TODO.
+  Never duplicate transcripts — store pointers only. If `$MEETINGS_SCOPE` is blank, note it as a TODO.
 
-### Step 3b — Inbox scan (LIVE) — email slot
+### Step 3b — Inbox scan (LIVE) — `tool:email`
 
-- **If the `email` slot is `none`:** **skip the inbox scan** and say so. Print: "the `email` slot is `none` — skip the inbox scan and say so." Do not attempt any mail fetch.
-- **Else:** pull this project's action items / commitments / threads needing a response from **{{email}}**, filtered by `EMAIL_REF` (the project's label/folder/sender filter), falling back to keyword title/subject match against `KEYWORDS` when `EMAIL_REF` is blank. **Run inline in the main session — MCP-backed mail tools can fail silently inside subagents.** Surface the results in the briefing (Step 6); do not write them to a project file. If `EMAIL_REF` is blank, note it as a TODO.
+- **If `pm_tool_defined email` is false:** skip the inbox scan and say so: "tool:email not defined — skipping inbox scan." Do not attempt any mail fetch.
+- **Else:** pull this project's action items / commitments / threads needing a response from the `email` provider (Jamie: `ms365-outlook`), filtered by `$EMAIL_SCOPE` (the project's label/folder/sender filter), falling back to keyword subject match against `$KEYWORDS` when `$EMAIL_SCOPE` is blank. **Run inline in the main session — MCP-backed mail tools can fail silently inside subagents.** Surface the results in the briefing (Step 6); do not write them to a project file. If `$EMAIL_SCOPE` is blank, note it as a TODO.
 
-### Step 4 — Regenerate CALENDAR.md — tracker slot
+### Step 4 — Regenerate CALENDAR.md — `tool:calendar` + `tool:tasks` + `tool:github`
 
-- **If the `tracker` slot is `none`:** **skip the live due-date pull.** Leave the Synced section as `_(tracker slot is none — no due dates synced)_` and **preserve everything below the `<!-- PM:MANUAL -->` marker verbatim.** Say so in the briefing.
-- **Else:** pull forward-looking due dates for `TRACKER_REF` from **{{tracker}}**, rewrite the **Synced** section above the marker, and **preserve everything below it verbatim** (hand-added dated items). Sort synced entries by date. If `TRACKER_REF` is blank, leave Synced as `_(no tracker project configured — TODO)_` and still preserve Manual. **Run the read-modify-write under a lock** so concurrent tabs can't clobber each other's regeneration; write to a temp file and atomic-`mv` into place so a reader never sees a half-rewritten file:
+The **Synced** section (above the `<!-- PM:MANUAL -->` marker) is rebuilt from up to three tools, each guarded independently; **everything below the marker is preserved verbatim** (hand-added dated items). Build the Synced body as two sub-sections (keep them separate — do not interleave):
+
+- **Upcoming events** ← **`tool:calendar`** (Jamie: `ms365-calendar`). If `pm_tool_defined calendar` is false, render this sub-section as `_(tool:calendar not defined — no events synced)_`. Else pull forward-looking events scoped by `$CALENDAR_SCOPE` (fallback keyword match on `$KEYWORDS`).
+- **Due dates** ← **`tool:tasks`** (Jamie: `linear`) + **`tool:github`** (Jamie: `gh`) — two tools, merged and sorted by date. For each: if `pm_tool_defined <name>` is false, omit its lines and note "tool:<name> not defined — no due dates from it". Else pull forward-looking due dates — `tool:tasks` from `$TASKS_SCOPE` (Linear project), `tool:github` from `$GITHUB_SCOPE` (`owner/repo` issues/PRs with a due/milestone date).
+
+If a tool's ref is blank, leave its lines as a TODO and still preserve Manual. **Run the read-modify-write under a lock** so concurrent tabs can't clobber each other's regeneration; write to a temp file and atomic-`mv` into place so a reader never sees a half-rewritten file:
 
   ```bash
   source "{{framework_root}}/lib/with-lock.sh"
   regen_calendar() {
     MARKER='<!-- PM:MANUAL'
     # preserved="$(sed -n "/$MARKER/,\$p" "$ROOT/CALENDAR.md")"   # marker line onward, kept verbatim
-    # rebuild the Synced section above the marker, re-emit "$preserved" unchanged below it,
-    # then atomic-mv the temp file over "$ROOT/CALENDAR.md".
+    # rebuild the Synced section (Upcoming events + Due dates sub-sections) above the marker from
+    # tool:calendar / tool:tasks / tool:github (each guarded by pm_tool_defined), re-emit
+    # "$preserved" unchanged below it, then atomic-mv the temp file over "$ROOT/CALENDAR.md".
   }
   mkdir -p "$ROOT/.pm"
   with_lock "$ROOT/.pm/.calendar.lock" regen_calendar
   ```
+  - _related: `pm_tool_skills tasks` / `pm_tool_skills github` (discovery hints only)._
 
 ### Step 5 — Read handoff + open work
 
@@ -139,28 +164,30 @@ awk -v s="<!-- PM:SESSION $SID START -->" -v e="<!-- PM:SESSION $SID END -->" \
 grep -oE 'PM:SESSION [^ ]+ START' "$ROOT/LAST-SESSION.md" | grep -v " $SID " || true
 ```
 
-Then pull open work:
+Then pull open work (each bullet guarded by `pm_tool_defined <name>`; omit with a note when undefined):
 
-- **Tracker tasks** — **if the `tracker` slot is `none`:** skip; note "no tracker — tasks tracked manually in CONTEXT/notes". **Else:** list open items for `TRACKER_REF` (and/or `NOTES_REF`) from **{{tracker}}**.
-- **Recent activity** — **if the `logger` slot is `none`:** skip. **Else:** pull recent **{{logger}}** entries matching `KEYWORDS` / `NOTES_REF` (last few days) for recent decisions/actions.
+- **`tool:todo`** (Jamie: `crrt`) — open tasks for this project, filtered by `$TODO_SCOPE`: `crrt list -f "$TODO_SCOPE"`. Undefined ⇒ "tool:todo not defined — tasks tracked manually in CONTEXT/notes".
+- **`tool:tasks`** (Jamie: `linear`) — open issues in `$TASKS_SCOPE` (the same tool that fed CALENDAR due dates, here for the open-work list).
+- **`tool:github`** (Jamie: `gh`) — open PRs / issues for `$GITHUB_SCOPE`.
+- **`tool:logs`** (Jamie: `clog`) — recent log entries matching `$KEYWORDS` (last few days) for recent decisions/actions; grep the JSONL under `pm_tool_root logs` or use the `clog-search` patterns.
 
 ### Step 6 — Print the briefing
 
-Print these sections in order (omit a source's section when its slot is `none`, with a one-line note that it was skipped):
+Print these sections in order (omit a section when its tool is undefined, with a one-line note that it was skipped). Where a section is fed by a tool, append a one-line **related-skills** hint from `pm_tool_skills <name>` (discovery only — slash commands can't be auto-invoked):
 
-- **Status & recent decisions** — from recent logger entries + tracker state
-- **Open tasks / next actions** — tracker items (+ notes)
-- **Inbox needing a response** — action items / commitments / threads from **{{email}}** (omit when the `email` slot is `none`)
-- **Upcoming** — `CALENDAR.md`
-- **Recent meetings** — last few pointers from `meetings.jsonl`
+- **Status & recent decisions** — from recent `tool:logs` entries + `tool:tasks` state
+- **Open tasks / next actions** — `tool:todo` + `tool:tasks` + `tool:github` open items
+- **Inbox needing a response** — action items / commitments / threads from `tool:email` (omit when undefined)
+- **Upcoming** — `CALENDAR.md` (events from `tool:calendar`; due dates from `tool:tasks` + `tool:github`)
+- **Recent meetings** — last few pointers from `meetings.jsonl` — _related: `pm_tool_skills meetings`_
 - **Focus today** — your synthesis (lead from LAST-SESSION next-up)
 - **Collaborators** — a quick-reference table from `$COLLABORATORS` (`config.collaborators`): **Name | Role | Slack | GitHub**. Render `slack` as the profile link and `github` as `@<username>`; leave a cell blank when the field is `""`. If the array is absent or empty, print `_(no collaborators configured — TODO)_` — do not fabricate people or handles. This is read from local config (no live/MCP call).
 - **Quick links** — tracker project URL, repos, key docs from `CONTEXT.md`
 
-### Step 7 — Log it — logger slot
+### Step 7 — Log it — `tool:logs`
 
-- **If the `logger` slot is `none`:** skip.
-- **Else:** record via **{{logger}}**: `pm-start: opened '<name>' — synced N new meetings, regenerated CALENDAR, briefed`.
+- **If `pm_tool_defined logs` is false:** skip with a note.
+- **Else:** record via the `logs` provider (Jamie: `clog`): `clog ACTION "pm-start: opened '<name>' — synced N new meetings, regenerated CALENDAR, briefed"`.
 
 ### Step 8 — Print the session branding block (paste to apply)
 
@@ -179,7 +206,7 @@ Print these sections in order (omit a source's section when its slot is `none`, 
 - **This is the LIVE-sync entry point.** `/pm-status` is cache-only; do not duplicate live sync there.
 - **Session id: prefer the harness UUID, mint only as a fallback.** When `session.sh` returns a real UUID (from `CLAUDE_CODE_SESSION_ID` etc.), use it verbatim — never mint. Only when it returns a WEAK id (`tty-…`/`shell-…`) does pm-start mint a UUID and persist it to `{{framework_root}}/sessions/.mint/<anchor>`; this is the ONLY skill that writes the mint file. `session.sh` (used by `/pm-status` and `/pm-end`) only ever READS it, so all three resolve the same id.
 - **Meeting catch-up runs inline** — never delegate the meeting fetch to a subagent (MCP can fail silently there).
-- **Every slot has an explicit `none` branch** — when a slot is `none`, skip its sync and say so in the briefing. Never fabricate data for a disabled slot.
+- **Every tool is guarded by `pm_tool_defined <name>`** — when a tool is undefined, skip its sync and print "tool:<name> not defined — skipping <capability>" (naming the tool's manual skill where useful). Never fabricate data for an undefined tool.
 - **CALENDAR regeneration preserves manual entries** below the `<!-- PM:MANUAL -->` marker. Never drop them.
 - **meetings.jsonl is pointers only** — dedupe by `meeting_id`, never copy transcript bodies into the project.
 - **Blank config values are TODOs**, surfaced in the briefing, not fabricated.

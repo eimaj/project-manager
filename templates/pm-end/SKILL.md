@@ -1,12 +1,23 @@
 ---
 name: pm-end
-description: End-of-session capture for the active PM project — runs the logger hygiene guard first (when a logger is configured), summarizes the session, writes a tagged note, and updates this session's block in LAST-SESSION.md (current state / open threads / next-up / blockers) without clobbering other sessions' blocks. Use when wrapping up work on a project, "/pm-end", or "I'm done for now".
+description: End-of-session capture for the active PM project — runs the logs-sweep + todo-hygiene guard first (each half guarded by its own tool), summarizes the session, writes a tagged note, and updates this session's block in LAST-SESSION.md (current state / open threads / next-up / blockers) without clobbering other sessions' blocks. Use when wrapping up work on a project, "/pm-end", or "I'm done for now".
 ---
 
 # pm-end — Capture & Hand Off (EOD)
 
-> Rendered by `/pm-generate` from a tool-agnostic template. Slot names below were filled
-> from your mapping; logic talks to slots only and degrades when a slot is `none`.
+> Rendered by `/pm-generate`. This skill addresses capabilities by **named tool**
+> (`tool:<name>`) and resolves each at runtime via `{{framework_root}}/lib/config.sh` —
+> only `{{framework_root}}` and `{{notes_root}}` are substituted at render time. An
+> undefined tool (provider `none`) degrades with a printed note. The handoff, commit, and
+> auto-ship logic is tool-agnostic and never depends on the registry.
+
+## Default tool names
+
+The framework imposes no fixed role vocabulary — your tools are whatever names
+`~/.config/pm/config.json` declares. This skill references the **default name set
+`/pm-generate` suggests**: `meetings`, `calendar`, `email`, `tasks`, `github`, `todo`,
+`logs`, `notes`. pm-end only touches `tool:logs` (guard + session summary) and `tool:todo`
+(guard + journal). If you renamed a tool, adjust the `tool:<name>` references below.
 
 ## Trigger
 
@@ -25,9 +36,9 @@ description: End-of-session capture for the active PM project — runs the logge
 ## Framework facts (shared across all four pm-* skills)
 
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root (`<session-id>` via `{{framework_root}}/lib/session.sh`). **This skill reads it** (does not write it).
-- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**.
+- **Named tools:** `{{framework_root}}/lib/config.sh` (`pm_load_config`) exposes the tool registry; the guard + capture branch on `pm_tool_defined logs` + `pm_tool_defined todo`. Per-project scoping lives in `.pm/config.json` → `.tool_refs.<name>`. For Jamie's setup `logs`→clog and `todo`→crrt.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
-- **History lives in the logger; the handoff lives in `LAST-SESSION.md`.** There is **no JOURNAL.md** — `LAST-SESSION.md` carries one block per session (it is a forward handoff, not a log).
+- **History lives in `tool:logs`; narrative in the `tool:todo` journal; the handoff lives in `LAST-SESSION.md`.** There is **no JOURNAL.md** — `LAST-SESSION.md` carries one block per session (a forward handoff, not a log).
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
 
 ## Steps
@@ -35,30 +46,47 @@ description: End-of-session capture for the active PM project — runs the logge
 ### Step 1 — Resolve the project from the marker
 
 ```bash
+source "{{framework_root}}/lib/config.sh"
+pm_load_config || { echo "pm: no config — run /pm-generate first."; exit 1; }
 SID=$("{{framework_root}}/lib/session.sh")        # same resolver pm-start used to write the marker
 ROOT="$(cat "{{framework_root}}/sessions/$SID" 2>/dev/null)"
 test -f "$ROOT/.pm/config.json" || { echo "No active PM project this session — run /pm-start @<path> first."; exit 1; }
 NAME=$(jq -r '.name' "$ROOT/.pm/config.json")
-NOTES_REF=$(jq -r '.notes_ref // ""' "$ROOT/.pm/config.json")
+TODO_SCOPE=$(jq -r '.tool_refs.todo // ""' "$ROOT/.pm/config.json")   # crrt tag for this project
 KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 ```
 
-### Step 2 — GUARD (hygiene; logger slot)
+### Step 2 — GUARD (mandatory, always first action of substance)
 
-**Same guard as `/pm-status`.**
+**Same guard as `/pm-status`.** Both halves guarded independently:
 
-- **If the `logger` slot is `none`:** **skip the logger sweep** and print "logger slot is none — skipping hygiene sweep."
-- **Else:** invoke the **{{logger}}** sweep/backfill flow — scan the session for unlogged state-changes and auto-write the missing entries. If your logger has no sweep concept, record one summary entry.
+1. **`tool:logs` sweep** — **if `pm_tool_defined logs` is false:** skip and print "tool:logs not defined — skipping hygiene sweep." **Else:** invoke the `logs` provider's backfill sweep — for Jamie's `clog`, run [`clog-sweep`](../clog-sweep/SKILL.md) ("clog it"): scan the session for unlogged state-changes and auto-write the missing entries with paired LEARNINGs. _related: `pm_tool_skills logs`._
+2. **`tool:todo` hygiene** — **if `pm_tool_defined todo` is false:** skip and print "tool:todo not defined — skipping task hygiene." **Else:** update the `todo` provider (Jamie: `crrt`) — complete tasks finished this session, add new tasks surfaced, set due dates where known. Tag new tasks with `$TODO_SCOPE`.
 
-### Step 3 — Summarize the session — logger slot
+### Step 3 — Summarize the session's log for this project — `tool:logs`
 
-- **If the `logger` slot is `none`:** summarize from your own memory of the session (what got done, decisions, anything left open). This summary feeds Steps 4 and 5.
-- **Else:** read recent **{{logger}}** entries for this project (`NOTES_REF` / `KEYWORDS`) and produce a short summary: what got done, decisions made, anything left open.
+- **If `pm_tool_defined logs` is false:** summarize from your own memory of the session (what got done, decisions, anything left open) and note "tool:logs not defined — summary from session memory only". This summary feeds Steps 4 and 5.
+- **Else:** read today's entries from the `logs` provider (Jamie: `clog`) and filter to this project (`$TODO_SCOPE` / `$KEYWORDS`). Resolve the log directory from clog's own config (robust if logs are relocated):
 
-### Step 4 — Write a tagged note (optional; logger/notes slot)
+  ```bash
+  CLOG_CFG="$HOME/.config/clog/config.yaml"
+  LOG_ROOT=$(grep '^log_root:' "$CLOG_CFG" 2>/dev/null | cut -d'"' -f2); LOG_ROOT="${LOG_ROOT/\$\{HOME\}/$HOME}"
+  LOG_SUBDIR=$(grep '^log_subdir:' "$CLOG_CFG" 2>/dev/null | cut -d'"' -f2)
+  TODAY_LOG="${LOG_ROOT:-$(pm_tool_root_or_notes logs)}/${LOG_SUBDIR:-claude}/$(date +%Y%m%d).jsonl"
+  ```
 
-- **If the `logger` slot is `none`:** skip — there is no note sink. (The `LAST-SESSION.md` block in Step 5 is the durable record.)
-- **Else:** record a one-line note via **{{logger}}**, tagged with `NOTES_REF`, e.g. `pm-end <name>: <one-line summary of the session>`. Add a second one-line note only for a distinct learning or follow-up.
+  Produce a short summary from `$TODAY_LOG`: what got done, decisions made, anything left open.
+
+### Step 4 — Write a tagged journal entry — `tool:todo`
+
+- **If `pm_tool_defined todo` is false:** skip with a note — there is no journal sink. (The `LAST-SESSION.md` block in Step 5 is the durable record.)
+- **Else:** record a one-line journal note via the `todo` provider (Jamie: `crrt`), tagged with `$TODO_SCOPE`:
+
+  ```bash
+  crrt note "pm-end ${NAME}: <one-line summary of the session> #${TODO_SCOPE}"
+  ```
+
+  Keep it one line (per crrt house style). Add a second one-line note only for a distinct learning or follow-up. _related: `pm_tool_skills todo`._
 
 ### Step 5 — Update this session's handoff block in LAST-SESSION.md
 
@@ -139,10 +167,10 @@ if [[ "$AUTO_SHIP" == "true" && -n "$BRANCH" ]]; then
 fi
 ```
 
-### Step 7 — Log it — logger slot
+### Step 7 — Log it — `tool:logs`
 
-- **If the `logger` slot is `none`:** skip.
-- **Else:** record via **{{logger}}**: `pm-end: wrapped '<name>' — note logged, LAST-SESSION.md updated`.
+- **If `pm_tool_defined logs` is false:** skip with a note.
+- **Else:** record via the `logs` provider (Jamie: `clog`): `clog ACTION "pm-end: wrapped '<name>' — journal logged, LAST-SESSION.md updated"`.
 
 ### Step 8 — Release the session color (optional)
 
@@ -156,10 +184,10 @@ Print this only when the project has a `session_color` configured; skip it other
 
 ## Rules
 
-- **The guard runs first when a logger exists** — identical to `/pm-status`. When the `logger` slot is `none`, skip it and say so.
+- **The guard always runs first** (`tool:logs` sweep + `tool:todo` hygiene, each guarded by `pm_tool_defined`) — identical to `/pm-status`. When a guard tool is undefined, skip that half and say so. Non-negotiable.
 - **LAST-SESSION.md is per-session blocks** — write only *your* session's block via `handoff-write.sh` (it replaces your block, preserves others). Never overwrite the whole file: a concurrent session on the same project may own another block.
 - **No JOURNAL.md** — do not create one.
-- **Every slot has an explicit `none` branch** — never fabricate logger/tracker activity for a disabled slot.
+- **Every tool is guarded by `pm_tool_defined <name>`** — never fabricate `tool:logs` or `tool:todo` activity for an undefined tool; print "tool:<name> not defined — skipping <capability>".
 - **Commit (when in a repo) is scoped to the project folder** — stage only paths under `$ROOT`, on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` (never the shared per-day branch); the shared working tree is restored to the branch you were on afterward; never push to `main`, never stage files outside the project folder. Reconcile the per-session branches at end of day (see Step 6).
 - **`auto_ship` (per-project, `.pm/config.json`, default `false`)** — when `false`, the session branch stays local and you reconcile at EOD (Mode A). When `true`, `/pm-end` auto-ships the branch via the PR workflow (push branch → `gh pr create` → `gh pr merge --merge --delete-branch`), only when a commit was actually made and a remote exists — never a direct push to `main`, never `--no-verify` (Mode B).
 

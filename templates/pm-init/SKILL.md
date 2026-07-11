@@ -5,15 +5,25 @@ description: One-time scaffolder for a long-running project under the PM framewo
 
 # pm-init — Onboard a Project to the PM Framework
 
-> Rendered by `/pm-generate` from a tool-agnostic template. Concrete tool names below
-> were filled in from your capability-slot mapping; the logic itself only ever talks to
-> slots. Re-run `/pm-generate` to re-render after changing tools.
+> Rendered by `/pm-generate`. This skill addresses capabilities by **named tool**
+> (`tool:<name>`) and resolves them at runtime via `{{framework_root}}/lib/config.sh` —
+> only `{{framework_root}}` and `{{notes_root}}` are substituted at render time. Re-run
+> `/pm-generate` after changing your tool registry.
+
+## Default tool names
+
+The framework imposes no fixed role vocabulary — your tools are whatever names
+`~/.config/pm/config.json` declares. This skill references the **default name set
+`/pm-generate` suggests**: `meetings` (past/recorded), `calendar` (future/upcoming),
+`email`, `tasks`, `github`, `todo`, `logs`, `notes`. This skill does not hard-code them —
+it iterates whatever `pm_tools` reports. If you renamed a tool, the prompts below use your
+name automatically.
 
 ## Trigger
 
 **Use when:** the user wants to set up a project for the PM loop (`/pm-start`, `/pm-status`, `/pm-end`) for the first time, or to update an existing project's config ("re-init", "update the tracker project on X").
 **Do NOT use when:** the project is already initialized and you just want today's briefing → use `/pm-start` (or `/pm-status` for the cache-only view).
-**Inputs expected:** project name + absolute folder root (required); tracker project, meeting-source folder/label, notes tag, team, keywords (all optional).
+**Inputs expected:** project name + absolute folder root (required); one per-tool ref for each tool the registry defines (`tool:tasks` project, `tool:meetings` folder, `tool:todo` tag, `tool:github` `owner/repo`, …), team, keywords (all optional).
 **Outputs produced:** `<root>/.pm/config.json`, `<root>/CONTEXT.md`, `<root>/CALENDAR.md`, `<root>/meetings.jsonl`, one deduped line in `{{framework_root}}/registry.jsonl`, and finally an open session via `/pm-start`.
 
 ## Related Skills
@@ -30,20 +40,29 @@ description: One-time scaffolder for a long-running project under the PM framewo
 - **Registry:** `{{framework_root}}/registry.jsonl`, append-only, deduped by `root`.
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` contains the active project root (`<session-id>` resolved by `{{framework_root}}/lib/session.sh`). Written by `/pm-start`, read by `/pm-status` and `/pm-end`. Concurrent sessions each hold their own.
 - **Scaffolder:** `{{framework_root}}/lib/scaffold.sh` (the bash generator this skill drives).
-- **Capability slots (your mapping):** meeting source = **{{meeting_source}}**, tracker = **{{tracker}}**, logger = **{{logger}}**, email = **{{email}}**, notes store root = **{{notes_root}}**. A slot value of `none` means that capability is disabled and the skills degrade gracefully (see each skill's empty-slot branch).
+- **Named tools:** the personal registry (`~/.config/pm/config.json`) defines the tools by name; `{{framework_root}}/lib/config.sh` exposes them (`pm_tools`, `pm_tool_defined <name>`, `pm_tool_provider <name>`). This skill asks a per-project ref for **each defined tool** and records them in `.pm/config.json` → `tool_refs`. An undefined tool (or one whose provider is `none`) is simply skipped; the pm-* skills degrade gracefully at runtime.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`, plus any pre-existing `architecture/`, `adr/`, `plans/`, `meetings/`.
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
 
 ## The init questions
 
 1. **Project name** + **folder root** (absolute path) — required.
-2. **Tracker project** (name → resolve to ID via the **{{tracker}}** slot if you can) — optional. *(If the tracker slot is `none`, skip this question.)*
-3. **Meeting-source folder/label** (how this project's meetings are grouped in **{{meeting_source}}**) — optional. *(If the meeting_source slot is `none`, skip this question.)*
-4. **Email label/folder/filter** for this project's mail (how this project's mail is identified in **{{email}}** — a label, folder, or sender filter) — optional. *(If the email slot is `none`, skip this question.)*
-5. **Notes tag/label** for this project's tasks & notes — optional.
-6. **Team members** (context only) — optional.
-7. **Keywords / aliases** (for search + fallback meeting/email match) — optional.
-8. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
+2. **Per-tool refs — one question per defined tool.** Load the registry and iterate the tools it defines, asking how THIS project is identified inside each:
+
+   ```bash
+   source "{{framework_root}}/lib/config.sh"
+   pm_load_config || { echo "pm: no config — run /pm-generate first."; exit 1; }
+   for t in $(pm_tools); do
+     pm_tool_defined "$t" || continue                 # skip undefined / provider=none tools
+     echo "tool:$t ($(pm_tool_provider "$t")) — how is this project identified here? (blank = skip)"
+   done
+   ```
+
+   Ask one question per defined tool, phrased with its provider — e.g. "how is this project identified in `tool:tasks` (linear)?" (a Linear project), "`tool:meetings` (granola)?" (a Granola folder), "`tool:todo` (crrt)?" (a crrt tag), "`tool:email` (ms365-outlook)?" (a label/folder), "`tool:github` (gh)?" (an `owner/repo`). A **blank answer skips** that tool → it falls back to keyword matching. Each answer becomes one `--tool-ref <name>=<value>` flag in Step 2.
+3. **Team members** (context only; not used for filtering) — optional.
+4. **Keywords / aliases** (for `tool:logs` search + fallback meeting/email match) — optional.
+5. **Claude Code session color** — optional. One of Claude Code's `/color` palette: `red, blue, green, yellow, purple, orange, pink, cyan, default`. `/pm-start` ends by printing a paste-ready `/rename <name>` + `/color <color>` block. (Do not invent other color names or `#hex` — they are invalid in `/color`.)
+6. **Auto-ship on `/pm-end`?** — optional, **default `false`**. When `true`, `/pm-end` ships each session's commit through the PR workflow (push branch → `gh pr create` → `gh pr merge --delete-branch`) instead of leaving it local for end-of-day reconciliation. Leave blank (or `false`) to keep the safe default; only set `true` for a project you want auto-merged per session.
 
 ## The `collaborators` field (hand-maintained)
 
@@ -72,24 +91,26 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
 
 ## Steps
 
-1. **Gather answers.** Ask the questions above (or accept them inline). Skip any question whose slot is `none`. Leave any optional answer blank if unknown — record it as a TODO; never invent values.
+1. **Gather answers.** Ask the questions above (or accept them inline), iterating the defined tools for the per-tool refs. Leave any optional answer blank if unknown — record it as a TODO; never invent values.
 
-2. **Run the scaffolder.** Pass answers as flags (non-interactive) so nothing is mis-prompted:
+2. **Run the scaffolder.** Pass answers as flags (non-interactive) so nothing is mis-prompted. Emit **one `--tool-ref <name>=<value>` per tool the user gave a non-blank answer for** (skip the blanks — the tool then falls back to keyword matching):
 
    ```bash
    "{{framework_root}}/lib/scaffold.sh" \
      --name "<name>" \
      --root "<absolute root>" \
-     --tracker-ref "<tracker project or blank>" \
-     --meeting-ref "<meeting folder/label or blank>" \
-     --email-ref "<email label/folder/filter or blank>" \
-     --notes-ref "<tag or blank>" \
+     --tool-ref "tasks=<Linear project or omit>" \
+     --tool-ref "meetings=<Granola folder or omit>" \
+     --tool-ref "todo=<crrt tag or omit>" \
+     --tool-ref "email=<Outlook label/folder or omit>" \
+     --tool-ref "github=<owner/repo or omit>" \
      --team "<comma,separated or blank>" \
      --keywords "<comma,separated or blank>" \
-     --session-color "<red|blue|green|yellow|purple|orange|pink|cyan|default or blank>"
+     --session-color "<red|blue|green|yellow|purple|orange|pink|cyan|default or blank>" \
+     --auto-ship "<true|false — blank keeps the default false>"
    ```
 
-   The script writes `.pm/config.json` (always), seeds `CONTEXT.md` / `CALENDAR.md` / `meetings.jsonl` **only if missing** (re-init never clobbers content), and upserts the registry by `root`.
+   The `--tool-ref` names must match the registry's tool names (use whatever `pm_tools` reported, not necessarily the defaults shown). The script writes `.pm/config.json` (always) with a `tool_refs` map, seeds `CONTEXT.md` / `CALENDAR.md` / `meetings.jsonl` **only if missing** (re-init never clobbers content), and upserts the registry by `root`.
 
 3. **Verify.**
 
@@ -100,17 +121,18 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
 
 4. **Seed CONTEXT.md pointers.** The scaffolder writes a skeleton with pointers to any existing `architecture/`, `adr/`, `plans/`, `meetings/`. If the project already has real architecture docs, edit `CONTEXT.md` to add a 3-line summary and direct links — keep it short; it is the stable overview `/pm-start` leads with.
 
-5. **Log it (logger slot).**
-   - **If the `logger` slot is `none`:** skip — there is no activity logger configured. Say "logger slot is none — skipping init log entry."
-   - **Else:** record a one-line action via the **{{logger}}** tool, e.g. `pm-init: onboarded '<name>' at <root> — registry upserted`.
+5. **Log it — `tool:logs`.**
+   - **If `pm_tool_defined logs` is false:** skip with a note "tool:logs not defined — skipping init log entry."
+   - **Else:** record a one-line action via the `logs` provider (Jamie: `clog`), e.g. `clog ACTION "pm-init: onboarded '<name>' at <root> — registry upserted"`.
 
 6. **Report & open.** Print the file list, then immediately run [`/pm-start`](../pm-start/SKILL.md) against `<root>` to open the project in this session — set the marker, run live sync, print the briefing, and end with the `/rename` + `/color` session-branding block. Init flows straight into a working session; the user does not run `/pm-start` separately.
 
 ## Rules
 
 - **Re-init is safe.** Re-running edits `config.json` and upserts the registry but never clobbers `CONTEXT.md`, `CALENDAR.md`, or `meetings.jsonl`.
-- **Do not reimplement** tracker/meeting/logger logic here — init only writes config + seed files. Live data comes at `/pm-start`.
-- **Blank optionals stay blank** and become TODOs in `CONTEXT.md`. Never fabricate a tracker ID or a meeting folder.
+- **Do not reimplement** any tool's live logic here — init only writes config + seed files. Live data comes at `/pm-start`.
+- **Only prompt for defined tools** — iterate `pm_tools` + `pm_tool_defined`; never ask for a tool the registry doesn't define.
+- **Blank optionals stay blank** and become TODOs in `CONTEXT.md`. Never fabricate a `tool_refs` value (a Linear project, a Granola folder, …).
 - **No commit/push.** Only writes under `<root>` and the registry.
 
 ## Signal Keywords

@@ -1,6 +1,6 @@
 ---
 name: pm-generate
-description: Interactive generator that stands up a personalized, tool-agnostic PM skill set. Auto-detects the user's MCP servers and CLI tooling, confirms which tool fills each capability slot (meeting_source, tracker, logger, email, notes_store), renders the pm-init / pm-start / pm-status / pm-end skills directly into ~/.claude/skills/pm-*, writes a gitignored personal config, and installs the framework lib + runtime state. Use when onboarding yourself to the PM framework, "/pm-generate", or "set up my PM skills".
+description: Interactive generator that stands up a personalized PM skill set around user-defined named tools (not fixed roles). Audits the user's active MCP servers and skills, groups them by capability type (meetings, calendar, email, tasks, todo, logs, github, notes), then walks the user through each group to confirm/name a tool, its notes root, its provider, and its linked skills. Renders the pm-init / pm-start / pm-status / pm-end skills directly into ~/.claude/skills/pm-*, writes a gitignored personal config (schema v2, dynamic tools map), and installs the framework lib + runtime state. Use when onboarding yourself to the PM framework, "/pm-generate", or "set up my PM skills".
 ---
 
 # pm-generate — Generate a Personalized PM Skill Set
@@ -12,24 +12,28 @@ description: Interactive generator that stands up a personalized, tool-agnostic 
 **Inputs expected:** interactive answers confirming the per-slot tool mapping; optional paths (notes root, framework root).
 **Outputs produced:** rendered `~/.claude/skills/pm-{init,start,status,end}/SKILL.md`; personal config `~/.config/pm/config.json`; framework lib at `~/.claude/pm/lib/`; empty `registry.jsonl` + `sessions/`; a printed summary of what was wired and what degraded.
 
-## The capability-slot model (what this skill is mapping)
+## The named-tool model (what this skill is building)
 
-The generated skills **never call a tool by name** — they resolve an abstract *slot* from the personal config. This skill's whole job is to fill those slots:
+There are **no fixed capability slots**. The personal config's `tools` map (schema v2) is keyed by **arbitrary user-chosen names** — several tools may cover the same "role" (`todo`→crrt and `tasks`→linear are two distinct tools). Each tool maps one name to a concrete backend plus optional output/skills:
 
-| Slot | Purpose | Examples a user might map | If `none` (degrade) |
-|---|---|---|---|
-| `meeting_source` | pull meeting notes/transcripts at session start | a meetings MCP, a transcript CLI | `pm-start` skips meeting sync and says so |
-| `tracker` | issue/project due dates & status | an issue-tracker MCP, a tracker CLI, `gh` issues | `pm-start` skips due-date sync |
-| `logger` | record session actions / hygiene sweep | an activity-logger CLI | `pm-status`/`pm-end` skip the hygiene guard |
-| `email` | pull inbox action items / commitments / threads needing a response at session start | a mail MCP/CLI | `pm-start` skips the inbox scan and says so |
-| `notes_store` | where project files + archives live | a directory path | defaults to `~/.pm-notes` |
+```jsonc
+"tools": {
+  "<name>": {
+    "provider": "<mcp/cli/skill id, or \"none\">",  // required; "none"/blank ⇒ tool degrades
+    "root": "<abs path>",                            // optional output/notes sink; tools MAY share one
+    "skills": ["skill-a", "skill-b"]                 // optional related-skill cross-refs (advisory)
+  }
+}
+```
 
-`none` is always an allowed answer for `meeting_source`, `tracker`, `logger`, and `email`.
+Reserved (framework-level, NOT tools): `version` (`"2.0"`), `paths.framework_root`, `paths.notes_root`.
+
+The generated skills **address tools by NAME** (`tool:tasks`, `tool:todo`) and resolve name→provider at runtime through the `config.sh` accessors (`pm_tool_defined`, `pm_tool_provider`, `pm_tool_root`, `pm_tool_skills`). An undefined name — or one whose `provider` is `none`/blank — degrades gracefully with a printed note. This skill's job is to **audit what you already have, group it by type, and walk you through defining the tools you want**.
 
 ## Where things install (read carefully — this differs from a pure-symlink package)
 
 - **The `pm-generate` skill itself** is symlinked into `~/.claude/skills/pm-generate` by `install.sh`, clog-style (the repo is the source of truth; updates flow through the symlink).
-- **The generated `pm-*` skills are RENDERED, not symlinked.** This skill writes *real, substituted* `SKILL.md` files **directly into `~/.claude/skills/pm-init`, `~/.claude/skills/pm-start`, `~/.claude/skills/pm-status`, `~/.claude/skills/pm-end`.** They are user-specific output (your slot values are baked in), so there is no framework-skills dir and no symlink layer for them. Re-running `/pm-generate` re-renders them.
+- **The generated `pm-*` skills are RENDERED, not symlinked.** This skill writes *real, substituted* `SKILL.md` files **directly into `~/.claude/skills/pm-init`, `~/.claude/skills/pm-start`, `~/.claude/skills/pm-status`, `~/.claude/skills/pm-end`.** The render is **near-static** — templates name tools by name and resolve providers at runtime via the accessors, so only your `framework_root` / `notes_root` paths are baked in (see Step 8). Re-running `/pm-generate` re-renders them.
 - **`~/.claude/pm/` holds only** the framework `lib/` plus runtime state (`registry.jsonl`, `sessions/`). It does **not** hold the generated skills.
 
 ## Steps
@@ -47,93 +51,141 @@ echo "repo: $REPO"
 
 If `$REPO` can't be resolved (skill not yet symlinked), ask the user for the clone path and use that.
 
-### Step 1 — Detect available tooling
+### Step 1 — Audit active MCP servers
 
-Detection is advisory — it only proposes defaults; the user confirms in Step 2. Use **`claude mcp list` as the source of truth for MCP servers** (it reflects what is actually loaded across CC versions), and fall back to reading `~/.claude.json` only if the command is unavailable.
+Advisory only — this proposes providers; the user confirms per-group in Step 5. Use **`claude mcp list` as the source of truth for MCP servers** (it reflects what is actually loaded across CC versions); fall back to reading `~/.claude.json` only if the command is unavailable.
 
 ```bash
 # --- MCP servers (primary: claude mcp list) ---
 MCP_RAW="$(claude mcp list 2>/dev/null || true)"
 if [[ -z "$MCP_RAW" && -f "$HOME/.claude.json" ]]; then
-  # Fallback: server names from the config file.
   MCP_RAW="$(jq -r '(.mcpServers // {}) | keys[]?' "$HOME/.claude.json" 2>/dev/null || true)"
 fi
 echo "Detected MCP servers:"; printf '%s\n' "$MCP_RAW" | sed 's/^/  - /'
 
-# --- CLI tools on PATH (advisory; common logger/tracker CLIs) ---
-for c in gh; do command -v "$c" >/dev/null 2>&1 && echo "Found CLI: $c ($(command -v "$c"))"; done
-# Also probe any logger CLI the user names interactively in Step 2 with: command -v <name>
+# --- CLI tools on PATH (advisory backends: gh, crrt, clog) ---
+for c in gh crrt clog; do command -v "$c" >/dev/null 2>&1 && echo "Found CLI: $c ($(command -v "$c"))"; done
 ```
 
-Present the raw detected list to the user. Do **not** assume what each server is for — the user assigns it to a slot next.
+Present the raw detected list. Do **not** assume what each server is for — grouping (Step 3) proposes, the walk-through (Step 5) confirms.
 
-#### Recognition hint map (suggestion only — the raw list above is still authoritative)
+### Step 2 — Audit active skills
 
-To make Step 2 faster, match each detected MCP server name (case-insensitive substring) against the table below and **propose** the corresponding slot as that server's likely role. This is purely a *suggestion* to pre-fill the Step 2 prompt — the user still confirms or overrides every slot, and `none` is always offered. The raw detected list is always shown alongside; an unrecognized server is not dropped, it just gets no pre-fill. **The mapping lives only here in the generator — generated skills stay tool-agnostic (slots only).**
+Enumerate `~/.claude/skills/*` — these are the candidates for each tool's `skills[]` linkage. For each, capture its name, one-line description, and signal keywords (used by the grouping heuristic to bucket it).
 
-| Slot to propose | Detected name contains (case-insensitive) |
-|---|---|
-| `tracker` | jira, atlassian, linear, github, asana, shortcut, clickup |
-| `meeting_source` | granola, otter, fireflies, zoom, fathom, gong |
-| `email` | gmail, outlook, microsoft, superhuman, mail |
-| `logger` | clog |
+```bash
+SKILLS_DIR="$HOME/.claude/skills"
+for d in "$SKILLS_DIR"/*/; do
+  s="$(basename "$d")"; f="$d/SKILL.md"
+  [[ -f "$f" ]] || continue
+  # one-line description from frontmatter (advisory)
+  desc="$(awk -F': ' '/^description:/{sub(/^description: */,""); print; exit}' "$f")"
+  echo "  - $s — ${desc:0:100}"
+done
+```
 
-Precedence when a name matches more than one row: prefer the **most specific** match for that tool's primary role (e.g. `microsoft` → `email` via Outlook/365 mail; a name matching both `github` and nothing else → `tracker`). When genuinely ambiguous, present both candidates to the user and let them choose. Do **not** expand detection beyond `claude mcp list` — the `logger` row is matched the same way against detected names, and the `gh` CLI + `command -v` logger probe below stay exactly as-is; no new CLI probes.
+Keep this list in hand — Step 3 buckets these skills, Step 5 offers them as multi-select per group.
 
-### Step 2 — Propose + confirm a mapping per slot
+### Step 3 — Group the audited MCPs + skills by type
 
-For each slot, propose a default from what was detected (using the Step 1 recognition hint map as the pre-fill) and ask the user to confirm or override. Use an AskUserQuestion-style prompt per slot; **always offer `none`** for `meeting_source`, `tracker`, `logger`, and `email`. The recognition map only *suggests* — the user's answer wins, and any detected server can be assigned to any slot.
+Cluster the detected backends and skills into **capability groups** so the walk-through is per-group, not per-item. This heuristic is **advisory and editable** — a starting point the Step 5 walk-through confirms/overrides. Match each detected MCP/CLI name (case-insensitive substring) and each skill (by name/signal keywords) into a group:
 
-- **meeting_source** — "Which of your detected tools pulls meeting notes/transcripts? (or `none`)"
-- **tracker** — "Which tool tracks issues/projects & due dates? (or `none`)"
-- **logger** — "Which tool records session activity / does a hygiene sweep? (or `none`)"
-- **email** — "Which tool reads your inbox for action items? (or `none`)"
-- **notes_store** — "Where should project files & the meeting archive live? (a directory path; default `~/.pm-notes`)"
+| Group (suggested tool name) | Detected backend contains (case-insensitive) | Suggested skills (from audit) |
+|---|---|---|
+| `meetings` | granola, otter, fireflies, zoom, fathom, gong | granola-import, meeting-summarize, pa-meeting-catchup |
+| `calendar` | ms365, microsoft, google, gcal, calendar | pa-morning-briefing |
+| `email` | outlook, ms365, microsoft, gmail, superhuman, mail | pa-email-triage, pa-slack-sweep, pa-morning-briefing |
+| `tasks` | linear, jira, atlassian, asana, shortcut, clickup | pa-task-triage, pa-linear-project-update, crrt-sync, tn-epic-updates |
+| `todo` | crrt, carrot | crrt, crrt-journal, crrt-sync |
+| `logs` | clog | clog, clog-sweep, clog-day, clog-week, clog-search |
+| `github` | gh, github | gh-pr-review, create-pr, watch-pr, branch-diff |
+| `notes` | filesystem (no backend needed) | (none) |
 
-Then collect paths:
-- **notes_root** — default `~/.pm-notes` (used above).
-- **framework_root** — default `~/.claude/pm` (where lib + state install).
+Precedence when a backend matches more than one group: prefer the **most specific** role (e.g. `microsoft` → `email` via Outlook/365 mail AND `calendar` — offer BOTH as separate groups, since meetings-past vs calendar-future is modeled as two tools). An unrecognized server is not dropped — surface it so the user can define an ad-hoc group in Step 5. Skills whose keywords match nothing land in no group but stay available as manual multi-select adds. **This mapping lives ONLY in the generator — the rendered skills reference tools by NAME, never providers.**
 
-Record the confirmed answers in shell vars: `SLOT_MEETING`, `SLOT_TRACKER`, `SLOT_LOGGER`, `SLOT_EMAIL`, `NOTES_ROOT`, `FRAMEWORK_ROOT` (each empty slot recorded literally as `none`).
+### Step 4 — Collect framework paths
 
-### Step 3 — Write the personal config (gitignored)
+Gather these **before** the walk-through so `notes_root` is a real default for each tool's `root` in Step 5c.
 
-Render `config/config.example.json` into `~/.config/pm/config.json`, substituting the confirmed values. Never overwrite an existing config without confirming first.
+- **framework_root** — default `~/.claude/pm` (where `lib/` + runtime state install).
+- **notes_root** — default `~/Code/logs/PersonalAssistant` (the default output sink for any tool without its own `root`, and the base for project scaffolds).
+
+```bash
+NOTES_ROOT="${NOTES_ROOT/#\~/$HOME}"; NOTES_ROOT="${NOTES_ROOT:-$HOME/Code/logs/PersonalAssistant}"
+FRAMEWORK_ROOT="${FRAMEWORK_ROOT/#\~/$HOME}"; FRAMEWORK_ROOT="${FRAMEWORK_ROOT:-$HOME/.claude/pm}"
+```
+
+### Step 5 — Walk the user through each group
+
+For **every** group (including any ad-hoc group for an unrecognized server), ask AskUserQuestion-style:
+
+- **a. Include this?** — yes ⇒ it becomes a tool; no ⇒ skip (record as skipped for the summary).
+- **b. Name this** — the tool's key in the registry. Default = the group name (`meetings`, `tasks`, …); free-form override allowed. Reject reserved top-level names (`version`, `paths`, `tools`).
+- **c. Where should notes live?** — the tool's `root` output sink. Default = `paths.notes_root` (Step 4). **Shareable** — offer the roots already chosen this run as pick-list options so several tools can point at one folder (e.g. `email` + `notes` → the same PersonalAssistant dir). Blank/default = no explicit `root` (the tool falls back to `notes_root` at runtime via `pm_tool_root_or_notes`).
+- **d. Which skills to link?** — multi-select from the group's audited skills (pre-checked from the Step 3 grouping), plus any manual adds. These become the tool's `skills[]`.
+
+The **`provider`** comes from the group's detected backend — confirm or override it (`none`/blank is allowed, making the tool a placeholder that degrades). For `notes`, the provider is `filesystem`.
+
+Record each confirmed tool as a row of `(name, provider, root, skills[])`. Skipped groups and `none`-provider groups are noted for the Step 9 summary.
+
+### Step 6 — Write the personal config (gitignored, dynamic `tools`)
+
+Build `.tools` **dynamically** from the confirmed groups — arbitrary N, no fixed keys — then emit `version:"2.0"` + `paths`. Never overwrite an existing config without confirming first.
+
+The pattern: accumulate one NDJSON record per confirmed tool (`{name, value}`), then reduce them into the `tools` object. This assembles valid JSON for 0, 1, or N tools (0 tools ⇒ `{}`).
+
+**Overwrite guard — an existing `config.json` is the user's whole tool registry; STOP before clobbering it.** If the file already exists, do **not** write. Ask the user how to proceed and only continue on **explicit** confirmation. Re-running to change tools is common, so the safe paths are: (a) confirm overwrite (set `CONFIRM_CONFIG_OVERWRITE=yes`), or (b) back up the existing file first (`cp "$CONFIG_DST" "$CONFIG_DST.bak"`). Absent that confirmation, keep the existing config and skip the rest of this step.
 
 ```bash
 CONFIG_DST="${PM_CONFIG:-$HOME/.config/pm/config.json}"
 mkdir -p "$(dirname "$CONFIG_DST")"
-NOTES_ROOT="${NOTES_ROOT/#\~/$HOME}"; NOTES_ROOT="${NOTES_ROOT:-$HOME/.pm-notes}"
-FRAMEWORK_ROOT="${FRAMEWORK_ROOT/#\~/$HOME}"; FRAMEWORK_ROOT="${FRAMEWORK_ROOT:-$HOME/.claude/pm}"
 
-if [[ -f "$CONFIG_DST" ]]; then
-  echo "Config already exists at $CONFIG_DST — confirm overwrite before proceeding."
-  # On confirm only, continue; else keep existing and skip this step.
+# GUARD: never silently clobber an existing personal config (it holds the whole
+# tool registry). Gate the write behind an EXPLICIT overwrite confirmation.
+if [[ -f "$CONFIG_DST" && "${CONFIRM_CONFIG_OVERWRITE:-no}" != "yes" ]]; then
+  echo "GUARD: config exists at $CONFIG_DST — confirm overwrite to proceed."
+  echo "STOP and ask the user. Safe paths: set CONFIRM_CONFIG_OVERWRITE=yes to overwrite,"
+  echo "or back up first: cp \"$CONFIG_DST\" \"$CONFIG_DST.bak\"."
+  return 10 2>/dev/null || exit 10
 fi
 
+TOOLS_NDJSON="$(mktemp)"
+# add_tool <name> <provider> <root> [skill...]   — root "" ⇒ omit the key entirely.
+add_tool() {
+  local name="$1" provider="$2" root="$3"; shift 3
+  local skills_json='[]'
+  [[ "$#" -gt 0 ]] && skills_json=$(printf '%s\n' "$@" | jq -R . | jq -s .)
+  jq -nc \
+    --arg name "$name" --arg provider "$provider" --arg root "$root" \
+    --argjson skills "$skills_json" \
+    '{name:$name, value:({provider:$provider}
+        + (if $root=="" then {} else {root:$root} end)
+        + {skills:$skills})}' >> "$TOOLS_NDJSON"
+}
+
+# One add_tool call per group confirmed in Step 5, e.g.:
+#   add_tool meetings granola "$HOME/Code/logs/meetings" granola-import meeting-summarize
+#   add_tool email    ms365-outlook "$NOTES_ROOT" pa-email-triage pa-slack-sweep
+#   add_tool notes    filesystem "$NOTES_ROOT"          # shares email's root, no skills
+# (Emit these calls from the confirmed (name, provider, root, skills[]) rows.)
+
+# Reduce the per-tool records into the tools object (empty file ⇒ {}).
+TOOLS_OBJ=$(jq -s 'reduce .[] as $t ({}; .[$t.name] = $t.value)' "$TOOLS_NDJSON")
+
 jq -n \
-  --arg meeting "${SLOT_MEETING:-none}" \
-  --arg tracker "${SLOT_TRACKER:-none}" \
-  --arg logger  "${SLOT_LOGGER:-none}" \
-  --arg email   "${SLOT_EMAIL:-none}" \
-  --arg notes   "$NOTES_ROOT" \
-  --arg fw      "$FRAMEWORK_ROOT" \
-  '{
-     version: "1.0",
-     slots: {
-       meeting_source: { tool: $meeting },
-       tracker:        { tool: $tracker },
-       logger:         { tool: $logger },
-       email:          { tool: $email },
-       notes_store:    { tool: "filesystem", root: $notes }
-     },
-     paths: { notes_root: $notes, framework_root: $fw, meeting_archive: ($notes + "/meetings") }
-   }' > "$CONFIG_DST"
+  --arg fw "$FRAMEWORK_ROOT" --arg notes "$NOTES_ROOT" \
+  --argjson tools "$TOOLS_OBJ" \
+  '{version:"2.0", paths:{framework_root:$fw, notes_root:$notes}, tools:$tools}' > "$CONFIG_DST"
+rm -f "$TOOLS_NDJSON"
 echo "wrote $CONFIG_DST"
-mkdir -p "$NOTES_ROOT/meetings"
+mkdir -p "$NOTES_ROOT"
 ```
 
-### Step 4 — Install the framework lib + runtime state
+`config/config.example.json` is the reference for the shape this produces (schema v2). The written config loads cleanly through `lib/config.sh` — `pm_tools` lists every confirmed name, and shared roots resolve for each tool that points at them.
+
+### Step 7 — Install the framework lib + runtime state
+
+Copy the FULL lib set — including `with-lock.sh` (locking) and `session-commit.sh` (auto-commit) — so the rendered skills have every helper they source.
 
 ```bash
 mkdir -p "$FRAMEWORK_ROOT/lib" "$FRAMEWORK_ROOT/sessions"
@@ -146,9 +198,11 @@ echo "installed lib + state under $FRAMEWORK_ROOT"
 
 (If `framework_root` is the default `~/.claude/pm` and `install.sh` already placed the lib there, this is a no-op refresh — safe.)
 
-### Step 5 — Render the four pm-* skills (Option C: direct into ~/.claude/skills, with a declinable guard)
+### Step 8 — Render the four pm-* skills (near-static: direct into ~/.claude/skills, with a declinable guard)
 
-For each of `pm-init`, `pm-start`, `pm-status`, `pm-end`, render the template by substituting placeholders, then write the result **directly** to `~/.claude/skills/<skill>/SKILL.md`.
+For each of `pm-init`, `pm-start`, `pm-status`, `pm-end`, render the template, then write the result **directly** to `~/.claude/skills/<skill>/SKILL.md`.
+
+The render is **near-static**. Templates name tools by NAME (`tool:tasks`) and resolve providers/roots at runtime via the `config.sh` accessors, so tool identity lives in the config — NOT in the skill text. The **only** placeholders substituted are the two framework paths: `{{framework_root}}` and `{{notes_root}}`. There is **no** per-tool or per-provider substitution (no `{{meeting_source}}` / `{{tracker}}` / `{{logger}}` / `{{email}}`). (The template CONTENT rewrite that makes this true is a separate phase; this render step just expects the 2-placeholder scheme.)
 
 **Declinable guard — BEFORE writing each target, check it is safe to write:**
 
@@ -177,12 +231,8 @@ render_skill() {
   # matched text, so backslash-escape '\', '&', and '#' before substituting.
   esc() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
   sed \
-    -e "s#{{meeting_source}}#$(esc "${SLOT_MEETING:-none}")#g" \
-    -e "s#{{tracker}}#$(esc "${SLOT_TRACKER:-none}")#g" \
-    -e "s#{{logger}}#$(esc "${SLOT_LOGGER:-none}")#g" \
-    -e "s#{{email}}#$(esc "${SLOT_EMAIL:-none}")#g" \
-    -e "s#{{notes_root}}#$(esc "${NOTES_ROOT}")#g" \
     -e "s#{{framework_root}}#$(esc "${FRAMEWORK_ROOT}")#g" \
+    -e "s#{{notes_root}}#$(esc "${NOTES_ROOT}")#g" \
     "$src" > "$dst"
   echo "rendered $dst"
 }
@@ -196,20 +246,35 @@ done
 
 > Note: the rendered templates carry the literal line "Rendered by `/pm-generate`" near the top — that marker is what the guard greps for to recognize its own output.
 
-### Step 6 — Print the summary
+### Step 9 — Print the summary
 
 Print a clear summary:
 
-- **Slots wired:** meeting_source → `<value or none>`, tracker → `<…>`, logger → `<…>`, email → `<…>`, notes_store → `<NOTES_ROOT>`.
-- **Degraded slots:** list every slot set to `none` and the one-line behavior change (e.g. "meeting_source=none → pm-start skips meeting sync").
+- **Tools wired** — a table, one row per confirmed tool:
+
+  | Tool (name) | Provider | Root | # skills |
+  |---|---|---|---|
+  | `meetings` | granola | `~/Code/logs/meetings` | 3 |
+  | `email` | ms365-outlook | `~/Code/logs/PersonalAssistant` | 3 |
+  | `notes` | filesystem | `~/Code/logs/PersonalAssistant` (shared) | 0 |
+  | … | … | … | … |
+
+  Build it from the confirmed rows (or `pm_tools` + the accessors after Step 6, sourcing the resolver first so the functions are defined): `source "$FRAMEWORK_ROOT/lib/config.sh" && pm_load_config; while read -r t; do echo "$t | $(pm_tool_provider "$t") | $(pm_tool_root_or_notes "$t") | $(pm_tool_skills "$t" | grep -c .)"; done < <(pm_tools)`.
+- **Skipped / degraded groups:** list every group the user declined and every tool whose provider is `none`, with the one-line behavior change (e.g. "meetings skipped → pm-start skips meeting sync; run /granola-import by hand").
 - **Files written:** the four `~/.claude/skills/pm-*/SKILL.md`, `~/.config/pm/config.json`, `$FRAMEWORK_ROOT/lib/*`, `registry.jsonl`, `sessions/`.
 - **Next step:** "Run `/pm-init` in a project folder to onboard your first project."
 
 ## Rules
 
-- **Detect, never install.** This skill maps existing tools to slots; it does not install MCP servers or CLIs. Empty slots degrade gracefully.
-- **`none` is always valid** for meeting_source/tracker/logger/email. Record it literally; the rendered skills branch on it.
-- **Recognition is a suggestion, not a probe.** The Step 1 hint map only pre-fills Step 2 proposals from the names `claude mcp list` returns; it adds no CLI probes and the user confirms every slot. Mapping lives only in this generator — the rendered skills reference slots, never tool names.
+- **User-defined tools, not fixed roles.** There is no fixed slot vocabulary — the user names every tool. Several tools may cover one role (`todo`→crrt AND `tasks`→linear). The `tools` map is dynamic and arbitrary-N.
+- **Audit → group → walk-through.** Audit active MCPs (Step 1) + skills (Step 2), group them by type (Step 3, advisory heuristic), then walk the user per-group asking include / name / root / skills (Step 5). Never ask about fixed roles.
+- **Audit, never install.** This skill maps existing tools; it does not install MCP servers or CLIs. A tool with provider `none`/blank degrades gracefully.
+- **`none` is always valid** for any tool. Record it literally; the rendered skills branch on `pm_tool_defined`.
+- **Grouping is a suggestion.** The Step 3 heuristic only pre-fills the walk-through from what `claude mcp list` + `~/.claude/skills/*` return; the user confirms/renames/overrides every group. The mapping lives only in this generator — the rendered skills reference tools by NAME, never providers.
+- **Roots are shareable.** Multiple tools may point at one folder; offer already-chosen roots in the walk-through. A tool with no root falls back to `paths.notes_root` at runtime.
+- **Reject reserved names.** A tool may not be named `version`, `paths`, or `tools` (the reserved top-level keys).
+- **Config is built dynamically** with `jq` (schema v2, `version:"2.0"` + `paths` + a dynamic `tools` object). Never overwrite an existing config without confirming.
+- **Near-static render.** The only `sed` substitutions are `{{framework_root}}` and `{{notes_root}}` — no per-tool/provider substitution. Tool identity lives in the config.
 - **Declinable guard is mandatory.** Never overwrite a `~/.claude/skills/pm-*` that is not our own render or is a foreign symlink — stop and ask.
 - **The generated skills are rendered files, not symlinks.** Only `pm-generate` itself is symlinked (by `install.sh`).
 - **Personal config is gitignored** and lives at `~/.config/pm/config.json` — never commit it.
@@ -217,4 +282,4 @@ Print a clear summary:
 
 ## Signal Keywords
 <!-- Comma-separated terms the skills collector uses to attribute learnings to this skill -->
-pm-generate, pm-framework, capability-slots, tool-detection, mcp-detection, skill-generator, render-skills, onboard-pm, project-manager
+pm-generate, pm-framework, named-tools, user-defined-tools, tool-registry, tool-audit, mcp-detection, skill-grouping, skill-generator, render-skills, onboard-pm, project-manager

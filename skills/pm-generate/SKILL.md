@@ -14,7 +14,7 @@ description: Interactive generator that stands up a personalized PM skill set ar
 
 ## The named-tool model (what this skill is building)
 
-There are **no fixed capability slots**. The personal config's `tools` map (schema v2) is keyed by **arbitrary user-chosen names** — several tools may cover the same "role" (`todo`→crrt and `tasks`→linear are two distinct tools). Each tool maps one name to a concrete backend plus optional output/skills:
+There are **no fixed capability slots**. The personal config's `tools` map (schema v2) is keyed by **arbitrary user-chosen names** — several tools may cover the same "role" (a lightweight `todo` checklist and a heavier `tasks` tracker can be two distinct tools). Each tool maps one name to a concrete backend plus optional output/skills:
 
 ```jsonc
 "tools": {
@@ -32,7 +32,7 @@ The generated skills **address tools by NAME** (`tool:tasks`, `tool:todo`) and r
 
 ## Where things install (read carefully — this differs from a pure-symlink package)
 
-- **The `pm-generate` skill itself** is symlinked into `~/.claude/skills/pm-generate` by `install.sh`, clog-style (the repo is the source of truth; updates flow through the symlink).
+- **The `pm-generate` skill itself** is symlinked into `~/.claude/skills/pm-generate` by `install.sh` (the repo is the source of truth; updates flow through the symlink).
 - **The generated `pm-*` skills are RENDERED, not symlinked.** This skill writes *real, substituted* `SKILL.md` files **directly into `~/.claude/skills/pm-init`, `~/.claude/skills/pm-start`, `~/.claude/skills/pm-status`, `~/.claude/skills/pm-end`.** The render is **near-static** — templates name tools by name and resolve providers at runtime via the accessors, so only your `framework_root` / `notes_root` paths are baked in (see Step 8). Re-running `/pm-generate` re-renders them.
 - **`~/.claude/pm/` holds only** the framework `lib/` plus runtime state (`registry.jsonl`, `sessions/`). It does **not** hold the generated skills.
 
@@ -63,8 +63,8 @@ if [[ -z "$MCP_RAW" && -f "$HOME/.claude.json" ]]; then
 fi
 echo "Detected MCP servers:"; printf '%s\n' "$MCP_RAW" | sed 's/^/  - /'
 
-# --- CLI tools on PATH (advisory backends: gh, crrt, clog) ---
-for c in gh crrt clog; do command -v "$c" >/dev/null 2>&1 && echo "Found CLI: $c ($(command -v "$c"))"; done
+# --- CLI tools on PATH (advisory backends; add any CLI-backed tools you use) ---
+for c in gh; do command -v "$c" >/dev/null 2>&1 && echo "Found CLI: $c ($(command -v "$c"))"; done
 ```
 
 Present the raw detected list. Do **not** assume what each server is for — grouping (Step 3) proposes, the walk-through (Step 5) confirms.
@@ -90,16 +90,20 @@ Keep this list in hand — Step 3 buckets these skills, Step 5 offers them as mu
 
 Cluster the detected backends and skills into **capability groups** so the walk-through is per-group, not per-item. This heuristic is **advisory and editable** — a starting point the Step 5 walk-through confirms/overrides. Match each detected MCP/CLI name (case-insensitive substring) and each skill (by name/signal keywords) into a group:
 
-| Group (suggested tool name) | Detected backend contains (case-insensitive) | Suggested skills (from audit) |
+| Group (suggested tool name) | Detected backend contains (case-insensitive) | Suggested skills (generic examples) |
 |---|---|---|
-| `meetings` | granola, otter, fireflies, zoom, fathom, gong | granola-import, meeting-summarize, pa-meeting-catchup |
-| `calendar` | ms365, microsoft, google, gcal, calendar | pa-morning-briefing |
-| `email` | outlook, ms365, microsoft, gmail, superhuman, mail | pa-email-triage, pa-slack-sweep, pa-morning-briefing |
-| `tasks` | linear, jira, atlassian, asana, shortcut, clickup | pa-task-triage, pa-linear-project-update, crrt-sync, tn-epic-updates |
-| `todo` | crrt, carrot | crrt, crrt-journal, crrt-sync |
-| `logs` | clog | clog, clog-sweep, clog-day, clog-week, clog-search |
-| `github` | gh, github | gh-pr-review, create-pr, watch-pr, branch-diff |
+| `meetings` | otter, fireflies, zoom, fathom, gong (or your meeting-notes tool) | meeting-import, meeting-summary, meeting-catchup |
+| `calendar` | ms365, microsoft, google, gcal, calendar | morning-briefing |
+| `email` | outlook, ms365, microsoft, gmail, superhuman, mail | email-triage, morning-briefing |
+| `tasks` | linear, jira, atlassian, asana, shortcut, clickup | task-triage, project-update, tracker-sync |
+| `todo` | your todo/checklist tool | todo-sync, todo-journal |
+| `logs` | your log/activity tool | log-sweep, log-search, daily-log |
+| `github` | gh, github | pr-review, create-pr, watch-pr, branch-diff |
 | `notes` | filesystem (no backend needed) | (none) |
+
+> The **backend** column lists common providers only as detection hints; the **skills**
+> column names generic example skills — substitute whatever your Step 2 audit surfaces.
+> Neither column is authoritative: the Step 5 walk-through confirms every tool.
 
 Precedence when a backend matches more than one group: prefer the **most specific** role (e.g. `microsoft` → `email` via Outlook/365 mail AND `calendar` — offer BOTH as separate groups, since meetings-past vs calendar-future is modeled as two tools). An unrecognized server is not dropped — surface it so the user can define an ad-hoc group in Step 5. Skills whose keywords match nothing land in no group but stay available as manual multi-select adds. **This mapping lives ONLY in the generator — the rendered skills reference tools by NAME, never providers.**
 
@@ -108,10 +112,10 @@ Precedence when a backend matches more than one group: prefer the **most specifi
 Gather these **before** the walk-through so `notes_root` is a real default for each tool's `root` in Step 5c.
 
 - **framework_root** — default `~/.claude/pm` (where `lib/` + runtime state install).
-- **notes_root** — default `~/Code/logs/PersonalAssistant` (the default output sink for any tool without its own `root`, and the base for project scaffolds).
+- **notes_root** — default `~/.pm-notes` (the default output sink for any tool without its own `root`, and the base for project scaffolds).
 
 ```bash
-NOTES_ROOT="${NOTES_ROOT/#\~/$HOME}"; NOTES_ROOT="${NOTES_ROOT:-$HOME/Code/logs/PersonalAssistant}"
+NOTES_ROOT="${NOTES_ROOT/#\~/$HOME}"; NOTES_ROOT="${NOTES_ROOT:-$HOME/.pm-notes}"
 FRAMEWORK_ROOT="${FRAMEWORK_ROOT/#\~/$HOME}"; FRAMEWORK_ROOT="${FRAMEWORK_ROOT:-$HOME/.claude/pm}"
 ```
 
@@ -121,7 +125,7 @@ For **every** group (including any ad-hoc group for an unrecognized server), ask
 
 - **a. Include this?** — yes ⇒ it becomes a tool; no ⇒ skip (record as skipped for the summary).
 - **b. Name this** — the tool's key in the registry. Default = the group name (`meetings`, `tasks`, …); free-form override allowed. Reject reserved top-level names (`version`, `paths`, `tools`).
-- **c. Where should notes live?** — the tool's `root` output sink. Default = `paths.notes_root` (Step 4). **Shareable** — offer the roots already chosen this run as pick-list options so several tools can point at one folder (e.g. `email` + `notes` → the same PersonalAssistant dir). Blank/default = no explicit `root` (the tool falls back to `notes_root` at runtime via `pm_tool_root_or_notes`).
+- **c. Where should notes live?** — the tool's `root` output sink. Default = `paths.notes_root` (Step 4). **Shareable** — offer the roots already chosen this run as pick-list options so several tools can point at one folder (e.g. `email` + `notes` → the same notes dir). Blank/default = no explicit `root` (the tool falls back to `notes_root` at runtime via `pm_tool_root_or_notes`).
 - **d. Which skills to link?** — multi-select from the group's audited skills (pre-checked from the Step 3 grouping), plus any manual adds. These become the tool's `skills[]`.
 
 The **`provider`** comes from the group's detected backend — confirm or override it (`none`/blank is allowed, making the tool a placeholder that degrades). For `notes`, the provider is `filesystem`.
@@ -164,8 +168,8 @@ add_tool() {
 }
 
 # One add_tool call per group confirmed in Step 5, e.g.:
-#   add_tool meetings granola "$HOME/Code/logs/meetings" granola-import meeting-summarize
-#   add_tool email    ms365-outlook "$NOTES_ROOT" pa-email-triage pa-slack-sweep
+#   add_tool meetings <provider> "$HOME/.pm-notes/meetings" meeting-import meeting-summary
+#   add_tool email    <provider> "$NOTES_ROOT" email-triage
 #   add_tool notes    filesystem "$NOTES_ROOT"          # shares email's root, no skills
 # (Emit these calls from the confirmed (name, provider, root, skills[]) rows.)
 
@@ -202,6 +206,8 @@ echo "installed lib + state under $FRAMEWORK_ROOT"
 
 For each of `pm-init`, `pm-start`, `pm-status`, `pm-end`, render the template, then write the result **directly** to `~/.claude/skills/<skill>/SKILL.md`.
 
+**Template override convention.** The committed `templates/<skill>/SKILL.md` is the **public, tool-agnostic default** (tools by name, providers resolved at runtime). If you keep a personalized concrete variant, drop it at `templates/<skill>/SKILL.local.md` — this is **gitignored** (matched by `*.local.*`) and is your private override, exactly like `settings.local.json` overriding `settings.json`. The render step below prefers `SKILL.local.md` when present, else falls back to the committed `SKILL.md`. Only the two placeholders are substituted either way.
+
 The render is **near-static**. Templates name tools by NAME (`tool:tasks`) and resolve providers/roots at runtime via the `config.sh` accessors, so tool identity lives in the config — NOT in the skill text. The **only** placeholders substituted are the two framework paths: `{{framework_root}}` and `{{notes_root}}`. There is **no** per-tool or per-provider substitution (no `{{meeting_source}}` / `{{tracker}}` / `{{logger}}` / `{{email}}`). (The template CONTENT rewrite that makes this true is a separate phase; this render step just expects the 2-placeholder scheme.)
 
 **Declinable guard — BEFORE writing each target, check it is safe to write:**
@@ -210,7 +216,11 @@ The render is **near-static**. Templates name tools by NAME (`tool:tasks`) and r
 SKILLS_DIR="$HOME/.claude/skills"
 render_skill() {
   local skill="$1"
+  # Template override convention: the committed templates/$skill/SKILL.md is the
+  # PUBLIC, tool-agnostic default. If a gitignored templates/$skill/SKILL.local.md
+  # exists (your own concrete override, like settings.local.json), render THAT instead.
   local src="$REPO/templates/$skill/SKILL.md"
+  [[ -f "$REPO/templates/$skill/SKILL.local.md" ]] && src="$REPO/templates/$skill/SKILL.local.md"
   local dst_dir="$SKILLS_DIR/$skill"
   local dst="$dst_dir/SKILL.md"
 
@@ -254,19 +264,19 @@ Print a clear summary:
 
   | Tool (name) | Provider | Root | # skills |
   |---|---|---|---|
-  | `meetings` | granola | `~/Code/logs/meetings` | 3 |
-  | `email` | ms365-outlook | `~/Code/logs/PersonalAssistant` | 3 |
-  | `notes` | filesystem | `~/Code/logs/PersonalAssistant` (shared) | 0 |
+  | `meetings` | `<provider>` | `~/.pm-notes/meetings` | 3 |
+  | `email` | `<provider>` | `~/.pm-notes` | 3 |
+  | `notes` | filesystem | `~/.pm-notes` (shared) | 0 |
   | … | … | … | … |
 
   Build it from the confirmed rows (or `pm_tools` + the accessors after Step 6, sourcing the resolver first so the functions are defined): `source "$FRAMEWORK_ROOT/lib/config.sh" && pm_load_config; while read -r t; do echo "$t | $(pm_tool_provider "$t") | $(pm_tool_root_or_notes "$t") | $(pm_tool_skills "$t" | grep -c .)"; done < <(pm_tools)`.
-- **Skipped / degraded groups:** list every group the user declined and every tool whose provider is `none`, with the one-line behavior change (e.g. "meetings skipped → pm-start skips meeting sync; run /granola-import by hand").
+- **Skipped / degraded groups:** list every group the user declined and every tool whose provider is `none`, with the one-line behavior change (e.g. "meetings skipped → pm-start skips meeting sync; import meetings by hand").
 - **Files written:** the four `~/.claude/skills/pm-*/SKILL.md`, `~/.config/pm/config.json`, `$FRAMEWORK_ROOT/lib/*`, `registry.jsonl`, `sessions/`.
 - **Next step:** "Run `/pm-init` in a project folder to onboard your first project."
 
 ## Rules
 
-- **User-defined tools, not fixed roles.** There is no fixed slot vocabulary — the user names every tool. Several tools may cover one role (`todo`→crrt AND `tasks`→linear). The `tools` map is dynamic and arbitrary-N.
+- **User-defined tools, not fixed roles.** There is no fixed slot vocabulary — the user names every tool. Several tools may cover one role (a `todo` checklist AND a `tasks` tracker). The `tools` map is dynamic and arbitrary-N.
 - **Audit → group → walk-through.** Audit active MCPs (Step 1) + skills (Step 2), group them by type (Step 3, advisory heuristic), then walk the user per-group asking include / name / root / skills (Step 5). Never ask about fixed roles.
 - **Audit, never install.** This skill maps existing tools; it does not install MCP servers or CLIs. A tool with provider `none`/blank degrades gracefully.
 - **`none` is always valid** for any tool. Record it literally; the rendered skills branch on `pm_tool_defined`.
@@ -275,6 +285,7 @@ Print a clear summary:
 - **Reject reserved names.** A tool may not be named `version`, `paths`, or `tools` (the reserved top-level keys).
 - **Config is built dynamically** with `jq` (schema v2, `version:"2.0"` + `paths` + a dynamic `tools` object). Never overwrite an existing config without confirming.
 - **Near-static render.** The only `sed` substitutions are `{{framework_root}}` and `{{notes_root}}` — no per-tool/provider substitution. Tool identity lives in the config.
+- **`.local` template override.** The committed `templates/<skill>/SKILL.md` is the public default; a gitignored `templates/<skill>/SKILL.local.md` (matched by `*.local.*`) is your personal override and takes precedence when present. Never commit a `SKILL.local.md`.
 - **Declinable guard is mandatory.** Never overwrite a `~/.claude/skills/pm-*` that is not our own render or is a foreign symlink — stop and ask.
 - **The generated skills are rendered files, not symlinks.** Only `pm-generate` itself is symlinked (by `install.sh`).
 - **Personal config is gitignored** and lives at `~/.config/pm/config.json` — never commit it.

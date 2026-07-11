@@ -5,26 +5,24 @@
 # Generates the per-project PM files in <root> and appends a dedupe-keyed line to the
 # global registry. Driven by the generated /pm-init skill, but safe to run directly.
 #
-# This script names NO concrete tool. Each project records abstract *slot references*:
-#   meeting_ref  — how this project's meetings are identified in the meeting_source
-#                  (e.g. a folder name, a label) — meaning is defined by the user's mapping
-#   tracker_ref  — how this project maps to the tracker (e.g. a project name/ID)
-#   email_ref    — how this project's mail is identified in the email slot
-#                  (e.g. a label, folder, or sender filter) — meaning is defined by the mapping
-#   notes_ref    — optional tag/label the logger or notes_store uses for this project
-# What those refs mean concretely is resolved at runtime from ~/.config/pm/config.json.
+# This script names NO concrete tool. Each project records a **tool_refs map** keyed by the
+# tool names the personal registry (~/.config/pm/config.json) defines:
+#   tool_refs.<name>  — how THIS project is identified inside tool <name>'s backend
+#                       (a Granola folder for `meetings`, a Linear project id for `tasks`, a
+#                       crrt tag for `todo`, an Outlook label for `email`, an owner/repo for
+#                       `github`, …). Meaning is defined by the tool's backend; resolved at
+#                       runtime from ~/.config/pm/config.json. A tool with no entry falls back
+#                       to keyword matching.
 #
 # Two input modes:
 #   1. Non-interactive: pass values via env vars or --flags (CI / agent / re-init).
 #   2. Interactive: omit values; the script prompts for each (asks the init questions).
+#      No fixed ref prompts — refs come only via repeatable --tool-ref; pm-init drives them.
 #
 # Inputs (env var | flag):
 #   PM_NAME          | --name           project name (required)
 #   PM_ROOT          | --root           absolute folder path = project identity (required)
-#   PM_TRACKER_REF   | --tracker-ref    tracker project name/ID (optional)
-#   PM_MEETING_REF   | --meeting-ref    meeting_source folder/label for this project (optional)
-#   PM_EMAIL_REF     | --email-ref      email label/folder/sender filter for this project (optional)
-#   PM_NOTES_REF     | --notes-ref      tag/label for this project's tasks & notes (optional)
+#                    | --tool-ref       <name>=<value> per-tool project ref (repeatable, optional)
 #   PM_TEAM          | --team           comma-separated team members (optional)
 #   PM_KEYWORDS      | --keywords       comma-separated keywords/aliases (optional)
 #   PM_SESSION_COLOR | --session-color  Claude Code session color (optional)
@@ -54,14 +52,13 @@ fi
 REGISTRY="${PM_FRAMEWORK_ROOT}/registry.jsonl"
 
 # ---- parse flags (override env) ------------------------------------------------
+# Repeatable --tool-ref <name>=<value> pairs accumulate here (last-wins handled at build time).
+PM_TOOL_REFS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)          PM_NAME="$2"; shift 2 ;;
     --root)          PM_ROOT="$2"; shift 2 ;;
-    --tracker-ref)   PM_TRACKER_REF="$2"; shift 2 ;;
-    --meeting-ref)   PM_MEETING_REF="$2"; shift 2 ;;
-    --email-ref)     PM_EMAIL_REF="$2"; shift 2 ;;
-    --notes-ref)     PM_NOTES_REF="$2"; shift 2 ;;
+    --tool-ref)      PM_TOOL_REFS+=("$2"); shift 2 ;;
     --team)          PM_TEAM="$2"; shift 2 ;;
     --keywords)      PM_KEYWORDS="$2"; shift 2 ;;
     --session-color) PM_SESSION_COLOR="$2"; shift 2 ;;
@@ -91,20 +88,13 @@ prompt() {  # prompt VAR "question" "required"
 
 prompt PM_NAME          "Project name:" required
 prompt PM_ROOT          "Project folder root (absolute path):" required
-prompt PM_TRACKER_REF   "Tracker project (name or ID, blank to skip):"
-prompt PM_MEETING_REF   "Meeting source folder/label (blank to skip):"
-prompt PM_EMAIL_REF     "Email label/folder/sender filter (blank to skip):"
-prompt PM_NOTES_REF     "Tag/label for this project's tasks & notes (blank to skip):"
+# No fixed ref prompts — per-tool refs come only via repeatable --tool-ref (pm-init drives them).
 prompt PM_TEAM          "Team members (comma-separated, blank to skip):"
 prompt PM_KEYWORDS      "Keywords/aliases (comma-separated, blank to skip):"
 prompt PM_SESSION_COLOR "Claude Code session color (red|blue|green|yellow|purple|orange|pink|cyan|default; blank to skip):"
 
 # ---- normalize ----------------------------------------------------------------
 PM_ROOT="${PM_ROOT/#\~/$HOME}"
-PM_TRACKER_REF="${PM_TRACKER_REF:-}"
-PM_MEETING_REF="${PM_MEETING_REF:-}"
-PM_EMAIL_REF="${PM_EMAIL_REF:-}"
-PM_NOTES_REF="${PM_NOTES_REF:-}"
 PM_TEAM="${PM_TEAM:-}"
 PM_KEYWORDS="${PM_KEYWORDS:-}"
 PM_SESSION_COLOR="${PM_SESSION_COLOR:-}"
@@ -138,6 +128,22 @@ csv_to_json_array() {
 TEAM_JSON="$(csv_to_json_array "$PM_TEAM")"
 KEYWORDS_JSON="$(csv_to_json_array "$PM_KEYWORDS")"
 
+# repeated "name=value" pairs -> compact JSON object. Split on the FIRST '=' (so a value may
+# itself contain '='); skip pairs with a blank name or blank value; last-wins on a duplicate name.
+tool_refs_to_json() {
+  local obj='{}' pair name val
+  for pair in "$@"; do
+    [[ "$pair" == *"="* ]] || continue
+    name="${pair%%=*}"
+    val="${pair#*=}"
+    [[ -z "$name" || -z "$val" ]] && continue
+    obj="$(jq -c --arg k "$name" --arg v "$val" '. + {($k): $v}' <<<"$obj")"
+  done
+  printf '%s' "$obj"
+}
+
+TOOL_REFS_JSON="$(tool_refs_to_json "${PM_TOOL_REFS[@]+"${PM_TOOL_REFS[@]}"}")"
+
 # ---- write .pm/config.json (canonical; always rewritten) ----------------------
 mkdir -p "$PM_ROOT/.pm"
 CONFIG_PATH="$PM_ROOT/.pm/config.json"
@@ -156,10 +162,7 @@ jq -n \
   --argjson prior "$PRIOR" \
   --arg name "$PM_NAME" \
   --arg root "$PM_ROOT" \
-  --arg tracker "$PM_TRACKER_REF" \
-  --arg meeting "$PM_MEETING_REF" \
-  --arg email "$PM_EMAIL_REF" \
-  --arg notes "$PM_NOTES_REF" \
+  --argjson tool_refs "$TOOL_REFS_JSON" \
   --argjson team "$TEAM_JSON" \
   --argjson keywords "$KEYWORDS_JSON" \
   --arg session_color "$PM_SESSION_COLOR" \
@@ -169,13 +172,13 @@ jq -n \
   # keep the prior value when the new input is blank and the prior has one.
   def keep(new; old):    if new != "" then new else (old // new) end;
   def keeparr(new; old): if (new | length) > 0 then new else (old // new) end;
+  # tool_refs is an object: the outer  $prior * managed  deep-merge recurses into it, so newly
+  # passed refs merge onto any prior/hand-set tool_refs entries (last-wins per name) without
+  # dropping the others. Seed {} for a brand-new config.
   $prior * {
     name:          $name,
     root:          $root,
-    tracker_ref:   keep($tracker; $prior.tracker_ref),
-    meeting_ref:   keep($meeting; $prior.meeting_ref),
-    email_ref:     keep($email; $prior.email_ref),
-    notes_ref:     keep($notes; $prior.notes_ref),
+    tool_refs:     (($prior.tool_refs // {}) * $tool_refs),
     team:          keeparr($team; $prior.team),
     keywords:      keeparr($keywords; $prior.keywords),
     collaborators: ($prior.collaborators // []),
@@ -229,20 +232,11 @@ else
     echo ""
     echo "## Links"
     echo ""
-    if [[ -n "$PM_TRACKER_REF" ]]; then
-      echo "- Tracker project: ${PM_TRACKER_REF}"
+    # Iterate tool_refs generically: one line per tool ("- \`meetings\`: <ref>"). Empty -> a TODO.
+    if [[ "$TOOL_REFS_JSON" != "{}" ]]; then
+      printf '%s' "$TOOL_REFS_JSON" | jq -r 'to_entries[] | "- `" + .key + "`: " + .value'
     else
-      echo "- Tracker project: TODO"
-    fi
-    if [[ -n "$PM_MEETING_REF" ]]; then
-      echo "- Meeting source folder/label: ${PM_MEETING_REF}"
-    else
-      echo "- Meeting source folder/label: TODO"
-    fi
-    if [[ -n "$PM_EMAIL_REF" ]]; then
-      echo "- Email label/folder/filter: ${PM_EMAIL_REF}"
-    else
-      echo "- Email label/folder/filter: TODO"
+      echo "- TODO: add per-tool refs (via /pm-init --tool-ref <name>=<value>)"
     fi
   } > "$CONTEXT_PATH"
   echo "wrote   $CONTEXT_PATH"
@@ -286,12 +280,9 @@ touch "$REGISTRY"
 REG_LINE="$(jq -n \
   --arg name "$PM_NAME" \
   --arg root "$PM_ROOT" \
-  --arg tracker "$PM_TRACKER_REF" \
-  --arg meeting "$PM_MEETING_REF" \
-  --arg email "$PM_EMAIL_REF" \
-  --arg notes "$PM_NOTES_REF" \
+  --argjson tool_refs "$TOOL_REFS_JSON" \
   --arg created "$CREATED_AT" \
-  -c '{name:$name, root:$root, tracker_ref:$tracker, meeting_ref:$meeting, email_ref:$email, notes_ref:$notes, created:$created}')"
+  -c '{name:$name, root:$root, tool_refs:$tool_refs, created:$created}')"
 
 # Lock the registry read-modify-write: concurrent scaffolds would otherwise lose-update.
 # Same discipline as handoff-write.sh, now via the shared with-lock helper — atomic

@@ -350,7 +350,7 @@ t_cfg_framework_paths_defaults() {
   local c="$WORK/cfg_paths_def.json"
   echo '{"version":"2.0","tools":{}}' > "$c"   # no paths.* at all
   assert_eq "$HOME/.claude/pm"                        "$(load_and_echo "$c" 'echo "$PM_FRAMEWORK_ROOT"')" "framework_root default"
-  assert_eq "$HOME/Code/logs/PersonalAssistant"       "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')"     "notes_root default"
+  assert_eq "$HOME/.pm-notes"                         "$(load_and_echo "$c" 'echo "$PM_NOTES_ROOT"')"     "notes_root default"
   assert_eq "$HOME/.claude/pm/registry.jsonl"         "$(load_and_echo "$c" 'echo "$PM_REGISTRY"')"       "registry default"
   assert_eq "$HOME/.claude/pm/sessions"               "$(load_and_echo "$c" 'echo "$PM_SESSIONS_DIR"')"   "sessions_dir default"
 }

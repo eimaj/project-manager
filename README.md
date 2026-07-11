@@ -28,7 +28,7 @@ choose**. Each name maps one tool to a concrete backend plus optional output and
 }
 ```
 
-The map is dynamic and arbitrary-N — several tools may cover the same "role" (`todo` → `crrt`
+The map is dynamic and arbitrary-N — several tools may cover the same "role" (`todo` → `todoApp`
 and `tasks` → `linear` are two distinct tools). The generated skills **address tools by NAME**
 (`tool:tasks`, `tool:meetings`) and resolve name → provider at runtime. An **undefined** name,
 or one whose `provider` is `none`/blank, **degrades gracefully** — the skill skips that
@@ -152,7 +152,7 @@ pm/
 
 ```
 ~/.claude/skills/
-  pm-generate -> <repo>/skills/pm-generate   # SYMLINK (clog-style; tracks the repo)
+  pm-generate -> <repo>/skills/pm-generate   # SYMLINK (logTool-style; tracks the repo)
   pm-{init,start,status,end}/SKILL.md        # RENDERED real files (your framework paths baked in)
 
 ~/.claude/pm/                 # framework dir — lib + runtime state ONLY (no skills)
@@ -188,9 +188,9 @@ pm/
 - **Safe concurrency** — per-session ids, markers, handoff blocks, and commit branches plus locked
   shared writes let multiple tabs run at once without lost updates.
 - **Tool-agnostic** — the named-tool registry means it works with *your* stack, not the author's.
-- **Familiar install** — the same symlink + gitignored-config convention as
-  [`clog`](https://github.com/eimaj/clog). *(Caveat: the **generated** `pm-*` skills are rendered as real
-  files with your framework paths baked in — not pure symlinks like clog. Only `pm-generate` itself
+- **Familiar install** — the same symlink + gitignored-config convention as a typical
+  symlinked CLI tool. *(Caveat: the **generated** `pm-*` skills are rendered as real
+  files with your framework paths baked in — not pure symlinks. Only `pm-generate` itself
   is symlinked. Re-running `/pm-generate` re-renders them.)*
 
 ## Why it might NOT be for everyone (honest take)
@@ -213,8 +213,8 @@ pm/
 ## Quickstart
 
 ```bash
-git clone <this-repo> ~/Code/pm
-cd ~/Code/pm
+git clone <this-repo> ~/pm
+cd ~/pm
 ./install.sh            # symlinks pm-generate, installs lib, inits state, seeds config
 ```
 

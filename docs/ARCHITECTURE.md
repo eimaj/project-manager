@@ -15,7 +15,7 @@ generated skills coordinate across sessions.
 
 ```
 ~/.claude/skills/
-  pm-generate -> <repo>/skills/pm-generate   # SYMLINK (clog-style; tracks the repo)
+  pm-generate -> <repo>/skills/pm-generate   # SYMLINK (logTool-style; tracks the repo)
   pm-init/SKILL.md                           # RENDERED real file (your framework paths baked in)
   pm-start/SKILL.md                          # RENDERED
   pm-status/SKILL.md                         # RENDERED
@@ -63,7 +63,7 @@ different content. So the generated `pm-init/start/
 status/end` are written as **real files directly into `~/.claude/skills/pm-*`**, with a
 declinable guard that refuses to overwrite a skill it did not itself render (it greps for a
 `Rendered by /pm-generate` marker). Only the generator skill (`pm-generate`), which is
-identical for everyone, is symlinked — exactly the clog convention.
+identical for everyone, is symlinked — exactly the logTool convention.
 
 ## Project identity & the registry
 
@@ -73,7 +73,7 @@ identical for everyone, is symlinked — exactly the clog convention.
 - Each registry line records `{name, root, tool_refs, created}`. `tool_refs` is a map keyed by
   the tool names your config defines — `tool_refs.<name>` is how *this* project is identified
   inside that tool's backend (a Granola folder for `meetings`, a Linear project id for `tasks`,
-  a crrt tag for `todo`, …). Its meaning is resolved against the tool at runtime, so the
+  a todoApp tag for `todo`, …). Its meaning is resolved against the tool at runtime, so the
   registry stays tool-agnostic; a tool with no entry falls back to keyword matching.
 
 ## Per-session markers (concurrency)

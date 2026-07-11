@@ -16,7 +16,7 @@
 # pm_load_config exports ONLY the fixed framework-level paths (tool names are dynamic,
 # so there are NO per-tool exports):
 #   PM_FRAMEWORK_ROOT   absolute framework dir      (paths.framework_root, default ~/.claude/pm)
-#   PM_NOTES_ROOT       default output sink         (paths.notes_root, default ~/Code/logs/PersonalAssistant)
+#   PM_NOTES_ROOT       default output sink         (paths.notes_root, default ~/.pm-notes)
 #   PM_REGISTRY         absolute registry.jsonl path ($PM_FRAMEWORK_ROOT/registry.jsonl)
 #   PM_SESSIONS_DIR     absolute per-session marker dir ($PM_FRAMEWORK_ROOT/sessions)
 #   PM_CONFIG_RESOLVED  absolute path of the config actually read (the accessors read this)
@@ -89,7 +89,7 @@ pm_load_config() {
   local notes_root
   notes_root=$(jq -r '(.paths.notes_root // "")' "$config_path")
   notes_root="$(_pm_expand "$notes_root")"
-  [[ -z "$notes_root" ]] && notes_root="${HOME}/Code/logs/PersonalAssistant"
+  [[ -z "$notes_root" ]] && notes_root="${HOME}/.pm-notes"
   export PM_NOTES_ROOT="$notes_root"
 
   export PM_REGISTRY="${PM_FRAMEWORK_ROOT}/registry.jsonl"

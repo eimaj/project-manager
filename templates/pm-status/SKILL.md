@@ -36,7 +36,7 @@ references below.
 ## Framework facts (shared across all four pm-* skills)
 
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` holds the active project root (`<session-id>` via `{{framework_root}}/lib/session.sh`). **This skill reads it** (does not write it).
-- **Named tools:** `{{framework_root}}/lib/config.sh` (`pm_load_config`) exposes the tool registry; the guard branches on `pm_tool_defined logs` + `pm_tool_defined todo`. Per-project scoping lives in `.pm/config.json` → `.tool_refs.<name>`. For Jamie's setup `logs`→clog and `todo`→crrt.
+- **Named tools:** `{{framework_root}}/lib/config.sh` (`pm_load_config`) exposes the tool registry; the guard branches on `pm_tool_defined logs` + `pm_tool_defined todo`. Each tool resolves to its configured provider via `pm_tool_provider <name>`. Per-project scoping lives in `.pm/config.json` → `.tool_refs.<name>`.
 - **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`.
 - **Cache-only:** this skill reads existing files + `tool:todo`. It performs **NO** live `tool:meetings` / `tool:tasks` / `tool:calendar` / `tool:email` sync — that is `/pm-start`'s job.
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
@@ -51,7 +51,7 @@ pm_load_config || { echo "pm: no config — run /pm-generate first."; exit 1; }
 SID=$("{{framework_root}}/lib/session.sh")        # same resolver pm-start used to write the marker
 ROOT="$(cat "{{framework_root}}/sessions/$SID" 2>/dev/null)"
 test -f "$ROOT/.pm/config.json" || { echo "No active PM project this session — run /pm-start @<path> first."; exit 1; }
-TODO_SCOPE=$(jq -r '.tool_refs.todo // ""' "$ROOT/.pm/config.json")   # crrt tag for this project
+TODO_SCOPE=$(jq -r '.tool_refs.todo // ""' "$ROOT/.pm/config.json")   # todo tag/list for this project
 KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 ```
 
@@ -59,8 +59,8 @@ KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
 
 **This is a standing hygiene guard and must run on every `/pm-status`.** It keeps the log and task list current regardless of what else happens. Both halves are guarded independently:
 
-1. **`tool:logs` sweep** — **if `pm_tool_defined logs` is false:** skip and print "tool:logs not defined — skipping hygiene sweep." **Else:** invoke the `logs` provider's sweep/backfill in **backfill mode** — for Jamie's `clog`, run [`clog-sweep`](../clog-sweep/SKILL.md) ("clog it"): scan the session for unlogged state-changes and auto-write the missing entries with paired LEARNINGs. _related: `pm_tool_skills logs`._
-2. **`tool:todo` hygiene** — **if `pm_tool_defined todo` is false:** skip and print "tool:todo not defined — skipping task hygiene." **Else:** update the `todo` provider (Jamie: `crrt`) — complete tasks finished this session, add new tasks surfaced, and add a one-line journal note if meaningful work happened. Tag new tasks with `$TODO_SCOPE`.
+1. **`tool:logs` sweep** — **if `pm_tool_defined logs` is false:** skip and print "tool:logs not defined — skipping hygiene sweep." **Else:** invoke the `logs` tool's configured provider in **backfill mode** (its sweep/backfill skill — see `pm_tool_skills logs`): scan the session for unlogged state-changes and auto-write the missing entries. _related: `pm_tool_skills logs`._
+2. **`tool:todo` hygiene** — **if `pm_tool_defined todo` is false:** skip and print "tool:todo not defined — skipping task hygiene." **Else:** update the `todo` tool's configured provider — complete tasks finished this session, add new tasks surfaced, and add a one-line journal note if meaningful work happened. Tag new tasks with `$TODO_SCOPE`.
 
 Do not skip the guard even if the briefing was requested moments ago.
 
@@ -71,7 +71,7 @@ Read and synthesize from cache only: `LAST-SESSION.md` (lead with this), `CONTEX
 `LAST-SESSION.md` holds **one block per session** (`<!-- PM:SESSION <id> START -->`). Lead with this session's own block (`$SID` from Step 1) if present, else the most recent; note other sessions' blocks as concurrent work.
 
 - **Status & recent decisions** — from `LAST-SESSION.md` + cached `tool:logs` entries if present (no live `tool:tasks` call)
-- **Open tasks / next actions** — `tool:todo` tagged `$TODO_SCOPE` (`crrt list -f "$TODO_SCOPE"` — local, allowed) + cached `CONTEXT.md`. Do **not** hit `tool:tasks`/`tool:github` live; that is `/pm-start`.
+- **Open tasks / next actions** — `tool:todo` tagged `$TODO_SCOPE` (a local read against its provider, allowed) + cached `CONTEXT.md`. Do **not** hit `tool:tasks`/`tool:github` live; that is `/pm-start`.
 - **Upcoming** — `CALENDAR.md` as it stands (not regenerated)
 - **Recent meetings** — last few pointers from `meetings.jsonl` — _related: `pm_tool_skills meetings`_
 - **Focus today** — synthesized, leading from `LAST-SESSION.md` next-up
@@ -82,7 +82,7 @@ If `CALENDAR.md` / `meetings.jsonl` look stale, note that `/pm-start` will refre
 ### Step 4 — Log it — `tool:logs`
 
 - **If `pm_tool_defined logs` is false:** skip with a note.
-- **Else:** record via the `logs` provider (Jamie: `clog`): `clog ACTION "pm-status: cache-only briefing for '<name>' (guard ran: sweep + todo)"`.
+- **Else:** record via the `logs` tool's configured provider an action entry like: `pm-status: cache-only briefing for '<name>' (guard ran: sweep + todo)`.
 
 ## Rules
 

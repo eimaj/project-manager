@@ -97,6 +97,77 @@ than failing or fabricating data. Concretely, with the conventional tool names:
 With neither a meeting tool nor a task tool defined, the framework degrades to a per-project
 notes scaffolder — still useful, but you lose the live-sync payoff.
 
+## Two levels: global registry + per-project override
+
+There are **two** places a tool can be defined, and they compose without conflict:
+
+1. **Global registry** — `~/.config/pm/config.json` → `tools{}` (above). Shared across every project.
+2. **Per-project override** — a project's `<root>/.pm/config.json` MAY carry its own optional
+   `tools{}` block. It overrides the global registry **for that project only**.
+
+Call `pm_load_project <root>` after `pm_load_config` to layer a project on top of the global
+registry for the current shell. The accessors then return the **effective** tool:
+
+```
+effective tool = (global.tools // {}) * (project.tools // {})     # per-field deep merge
+```
+
+**Precedence:** `project override > global > undefined (degrade)`.
+
+| Case | Result |
+|---|---|
+| tool in both | project fields win; fields the override omits fall through to the global tool |
+| tool only in the project override | fully defined + resolvable (a project-only tool) |
+| tool only in the global registry | resolves as the global tool (project changes nothing) |
+| tool in neither | `pm_tool_defined` is false → the skill degrades with a note |
+
+```bash
+source "$HOME/.claude/pm/lib/config.sh"
+pm_load_config
+pm_load_project "$ROOT"        # layer this project's override (no-op if it has none)
+pm_tool_provider tasks         # e.g. global "linear", but "jira" if this project overrides it
+pm_load_project ""             # clear the override → back to global-only
+```
+
+Example project `<root>/.pm/config.json` (the `tools{}` block is optional; `tool_refs` is
+separate and unchanged — it is how the project is *identified inside* a tool, not an override):
+
+```json
+{
+  "name": "My Project",
+  "root": "/abs/path/to/project",
+  "tool_refs": { "tasks": "PROJ-KEY" },
+  "tools": {
+    "tasks":  { "provider": "jira" },
+    "deploy": { "provider": "shipctl", "root": "~/pm-notes/deploy" }
+  }
+}
+```
+
+### No-conflict / seamless contract
+
+- **Read-only w.r.t. the global file.** `pm_load_project` only *reads* `<root>/.pm/config.json`;
+  it never writes back to `~/.config/pm/config.json`. A project override cannot mutate the global
+  registry.
+- **Scoped + swappable.** The override lives in `PM_PROJECT_TOOLS` for the current shell. Loading a
+  different project swaps it wholesale; `pm_load_project ""` (or loading a project with no
+  `tools{}`) clears it. No leakage between projects in one shell.
+- **Degrade unchanged.** A tool undefined at *both* levels is simply undefined — the same
+  `pm_tool_defined` degrade path applies. A project referencing a missing tool does not crash.
+- **Global-only path is exactly as before.** With no project loaded, every accessor behaves
+  identically to the single-level model — this feature is additive and back-compatible.
+
+## Per-project reports (`<root>/reports/`)
+
+Each project keeps its **own report artifacts** under **`<root>/reports/`**, seeded by `/pm-init`
+(created if missing, never clobbered on re-init). When a `pm-*` skill writes a report/output **for
+the active project**, it targets `<root>/reports/`.
+
+This is **distinct from a tool's global `root`** (`pm_tool_root <name>`): a tool's `root` is a
+**shared, cross-project sink** (e.g. a meeting archive or a log store that spans every project),
+whereas `<root>/reports/` is **local to one project**. Use `pm_tool_root_or_notes <name>` for a
+tool's cross-project archive; use `<root>/reports/` for this project's own artifacts.
+
 ## Root sharing
 
 A tool's `root` is where its output lands. Multiple tools **may point at one folder** — during

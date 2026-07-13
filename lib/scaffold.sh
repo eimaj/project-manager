@@ -29,8 +29,10 @@
 #   PM_AUTO_SHIP     | --auto-ship      auto-ship pm-end session branch: true|false (optional)
 #
 # Behavior:
-#   - Writes <root>/.pm/config.json, CONTEXT.md, CALENDAR.md, meetings.jsonl.
-#   - Never clobbers an existing CONTEXT.md / CALENDAR.md / meetings.jsonl (re-init safe).
+#   - Writes <root>/.pm/config.json, CONTEXT.md, CALENDAR.md, meetings.jsonl, reports/.
+#   - Never clobbers an existing CONTEXT.md / CALENDAR.md / meetings.jsonl / reports/ (re-init safe).
+#   - reports/ is the project-local report sink (this project's own artifacts), distinct from a
+#     tool's GLOBAL `root` in ~/.config/pm/config.json (the shared, cross-project output sink).
 #   - config.json is merged, not replaced: managed fields update from inputs while any
 #     unknown/extra fields in an existing config (and its `created`) are preserved.
 #   - Registry is deduped by root: existing root → updated in place; new root → appended.
@@ -285,6 +287,18 @@ if [[ -f "$MEETINGS_PATH" ]]; then
 else
   : > "$MEETINGS_PATH"
   echo "wrote   $MEETINGS_PATH (empty)"
+fi
+
+# ---- seed reports/ (project-local report sink; never clobber) -----------------
+# Each project keeps its OWN report artifacts under <root>/reports/ — distinct from a tool's
+# GLOBAL `root` (the shared, cross-project sink in ~/.config/pm/config.json). mkdir -p is
+# idempotent: an existing reports/ (and its contents) is left untouched.
+REPORTS_DIR="$PM_ROOT/reports"
+if [[ -d "$REPORTS_DIR" ]]; then
+  echo "kept    $REPORTS_DIR (exists)"
+else
+  mkdir -p "$REPORTS_DIR"
+  echo "wrote   $REPORTS_DIR/"
 fi
 
 # ---- registry: dedupe by root -------------------------------------------------

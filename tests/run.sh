@@ -304,10 +304,41 @@ t_sc_nonobject_refs_atomic() {
   assert_eq "Folder1" "$(jq -r '.tool_refs.meetings' "$cfg")"  "non-object prior: new ref present"
 }
 
+t_sc_reports_seed() {
+  # A fresh scaffold seeds <root>/reports/; re-init keeps it and never clobbers its contents.
+  local d="$WORK/sc_reports"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq "yes" "$([[ -d "$d/pa/reports" ]] && echo yes || echo no)" "fresh scaffold seeds reports/ dir"
+  echo keep > "$d/pa/reports/existing.md"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq "yes" "$([[ -f "$d/pa/reports/existing.md" ]] && echo yes || echo no)" "re-init never clobbers reports/ contents"
+  assert_file_contains "$d/pa/reports/existing.md" "keep" "re-init leaves report artifact intact"
+}
+
+t_sc_tools_override_preserved() {
+  # A hand-added project `tools{}` override in .pm/config.json must survive re-init verbatim
+  # (it is an unmanaged field carried by the deep-merge), alongside a merging --tool-ref.
+  local d="$WORK/sc_toolsoverride"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  local cfg="$d/pa/.pm/config.json"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" --tool-ref tasks=OLD >/dev/null 2>&1
+  # hand-add a project tool override block
+  local tmp; tmp="$(mktemp)"
+  jq '.tools = {"tasks":{"provider":"jira"},"deploy":{"provider":"shipctl","root":"~/x"}}' \
+    "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=Renamed PM_ROOT="$d/pa" "$SC" --tool-ref tasks=NEW >/dev/null 2>&1
+  assert_eq "jira"    "$(jq -r '.tools.tasks.provider' "$cfg")"   "re-init preserves hand-added tools.tasks override"
+  assert_eq "shipctl" "$(jq -r '.tools.deploy.provider' "$cfg")"  "re-init preserves hand-added tools.deploy override"
+  assert_eq "~/x"     "$(jq -r '.tools.deploy.root' "$cfg")"      "re-init preserves override root verbatim"
+  assert_eq "NEW"     "$(jq -r '.tool_refs.tasks' "$cfg")"        "re-init still merges tool_refs (separate from tools override)"
+  if jq -e . "$cfg" >/dev/null 2>&1; then pass "re-init with tools override is valid JSON"
+  else fail "re-init with tools override is valid JSON"; fi
+}
+
 t_sc_append; t_sc_update_inplace; t_sc_junk_line; t_sc_collab_seed_preserve; t_sc_collab_degrades
 t_sc_autoship_seed_preserve; t_sc_autoship_flag_and_degrades
 t_sc_unknown_fields_preserved; t_sc_tool_refs_build; t_sc_tool_refs_edge; t_sc_empty_input_no_clobber
 t_sc_fresh_created_present; t_sc_malformed_prior_new; t_sc_nonobject_refs_atomic
+t_sc_reports_seed; t_sc_tools_override_preserved
 
 # ── config.sh named-tool resolver ─────────────────────────────────────────────────
 section "config.sh"
@@ -449,6 +480,129 @@ t_cfg_set_e_accessor() {
 t_cfg_framework_paths; t_cfg_framework_paths_defaults; t_cfg_tools_list; t_cfg_tool_defined
 t_cfg_tool_provider; t_cfg_tool_root; t_cfg_tool_skills; t_cfg_tool_root_or_notes; t_cfg_tool_field
 t_cfg_load_missing; t_cfg_load_malformed; t_cfg_set_e_accessor
+
+# ── config.sh two-level resolution (global registry + per-project override) ────────
+section "config.sh two-level"
+
+# Source config.sh, load the global fixture, THEN layer a project override, then run snippet
+# in the SAME shell so PM_PROJECT_TOOLS is visible to the accessors.
+load_proj() { PM_CONFIG="$1" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet >/dev/null 2>&1; pm_load_project '$2' >/dev/null 2>&1; $3"; }
+
+# Write a project .pm/config.json under $1 carrying an optional tools{} override:
+#   - overrides `tasks` provider (global fixture has tasks->linear)
+#   - overrides `meetings` provider ONLY (root+skills must fall through to global per-field)
+#   - defines a project-ONLY tool `deploy`
+proj_override() {
+  mkdir -p "$1/.pm"
+  cat > "$1/.pm/config.json" <<'JSON'
+{
+  "name": "Demo",
+  "root": "unused",
+  "tool_refs": { "tasks": "PROJ-1" },
+  "tools": {
+    "tasks":    { "provider": "jira" },
+    "meetings": { "provider": "otter" },
+    "deploy":   { "provider": "shipctl", "root": "~/proj_deploy", "skills": ["ship"] }
+  }
+}
+JSON
+}
+
+t_2l_global_only_unchanged() {
+  # With NO project loaded, resolution is exactly the global-only path.
+  local c="$WORK/2l_g.json"; cfg_fixture "$c"
+  assert_eq "linear" "$(load_and_echo "$c" 'pm_tool_provider tasks')"  "no project: tasks resolves global (linear)"
+  assert_eq "yes"    "$(load_and_echo "$c" 'pm_tool_defined tasks && echo yes || echo no')" "no project: global tool defined"
+}
+
+t_2l_override_wins() {
+  local c="$WORK/2l_o.json"; cfg_fixture "$c"
+  local p="$WORK/2l_proj_o"; proj_override "$p"
+  assert_eq "jira" "$(load_proj "$c" "$p" 'pm_tool_provider tasks')" "override: project tasks wins (jira)"
+  assert_eq "yes"  "$(load_proj "$c" "$p" 'pm_tool_defined tasks && echo yes || echo no')" "override: overridden tool defined"
+}
+
+t_2l_field_fallthrough() {
+  # A project override of ONLY the provider leaves the global root+skills in effect (per-field merge).
+  local c="$WORK/2l_f.json"; cfg_fixture "$c"
+  local p="$WORK/2l_proj_f"; proj_override "$p"
+  assert_eq "otter"             "$(load_proj "$c" "$p" 'pm_tool_provider meetings')" "fall-through: provider overridden"
+  assert_eq "$HOME/shared_sink" "$(load_proj "$c" "$p" 'pm_tool_root meetings')"     "fall-through: global root retained"
+  local got; got="$(load_proj "$c" "$p" 'pm_tool_skills meetings' | tr '\n' ' ')"
+  assert_eq "granola-import meeting-summarize " "$got"                               "fall-through: global skills retained"
+}
+
+t_2l_project_only_tool() {
+  # A tool defined ONLY in the project override is fully defined + resolvable.
+  local c="$WORK/2l_p.json"; cfg_fixture "$c"
+  local p="$WORK/2l_proj_p"; proj_override "$p"
+  assert_eq "yes"               "$(load_proj "$c" "$p" 'pm_tool_defined deploy && echo yes || echo no')" "project-only: defined"
+  assert_eq "shipctl"           "$(load_proj "$c" "$p" 'pm_tool_provider deploy')" "project-only: provider resolves"
+  assert_eq "$HOME/proj_deploy" "$(load_proj "$c" "$p" 'pm_tool_root deploy')"     "project-only: root tilde-expanded"
+  assert_eq "ship"              "$(load_proj "$c" "$p" 'pm_tool_skills deploy')"   "project-only: skills resolve"
+}
+
+t_2l_undefined_both_degrades() {
+  # A tool undefined at BOTH levels degrades cleanly (no crash), even with a project loaded.
+  local c="$WORK/2l_u.json"; cfg_fixture "$c"
+  local p="$WORK/2l_proj_u"; proj_override "$p"
+  assert_eq "no"   "$(load_proj "$c" "$p" 'pm_tool_defined ghost && echo yes || echo no')" "undefined-both: not defined"
+  assert_eq "none" "$(load_proj "$c" "$p" 'pm_tool_provider ghost')"                       "undefined-both: provider none"
+  assert_eq ""     "$(load_proj "$c" "$p" 'pm_tool_root ghost')"                           "undefined-both: root empty"
+}
+
+t_2l_tools_union() {
+  # pm_tools reflects the union of global ∪ project-override names when a project is loaded.
+  local c="$WORK/2l_un.json"; cfg_fixture "$c"
+  local p="$WORK/2l_proj_un"; proj_override "$p"
+  local got; got="$(load_proj "$c" "$p" 'pm_tools' | sort | tr '\n' ' ')"
+  assert_eq "blank deploy home meetings notes off tasks " "$got" "union: global ∪ project-only (deploy) names"
+}
+
+t_2l_clear_and_swap() {
+  # Clearing the project (or loading none) reverts to global-only; loading a DIFFERENT project
+  # swaps the override wholesale — no leakage between projects in one shell.
+  local c="$WORK/2l_sw.json"; cfg_fixture "$c"
+  local pa="$WORK/2l_A"; proj_override "$pa"                # A: tasks->jira, defines deploy
+  local pb="$WORK/2l_B"; mkdir -p "$pb/.pm"
+  cat > "$pb/.pm/config.json" <<'JSON'
+{ "name": "B", "root": "unused", "tools": { "tasks": { "provider": "asana" } } }
+JSON
+  local out
+  out="$(PM_CONFIG="$c" bash -c "
+    source '$REPO/lib/config.sh'; pm_load_config --quiet >/dev/null 2>&1
+    pm_load_project '$pa'; echo A:\$(pm_tool_provider tasks):\$(pm_tool_defined deploy && echo Y || echo N)
+    pm_load_project '$pb'; echo B:\$(pm_tool_provider tasks):\$(pm_tool_defined deploy && echo Y || echo N)
+    pm_load_project '';    echo NONE:\$(pm_tool_provider tasks):\$(pm_tool_defined deploy && echo Y || echo N)
+  ")"
+  assert_contains "$out" "A:jira:Y"   "swap: project A override + project-only deploy active"
+  assert_contains "$out" "B:asana:N"  "swap: project B override replaces A (deploy gone)"
+  assert_contains "$out" "NONE:linear:N" "clear: reverts to global-only"
+}
+
+t_2l_no_override_is_global() {
+  # A project whose .pm/config.json has NO tools{} block (or no .pm at all) resolves global-only.
+  local c="$WORK/2l_no.json"; cfg_fixture "$c"
+  local p1="$WORK/2l_notools"; mkdir -p "$p1/.pm"
+  echo '{"name":"X","root":"unused","tool_refs":{"tasks":"T"}}' > "$p1/.pm/config.json"
+  assert_eq "linear" "$(load_proj "$c" "$p1" 'pm_tool_provider tasks')" "no tools block: resolves global"
+  local p2="$WORK/2l_nopm"; mkdir -p "$p2"                # no .pm/config.json at all
+  assert_eq "linear" "$(load_proj "$c" "$p2" 'pm_tool_provider tasks')" "no .pm config: resolves global"
+}
+
+t_2l_global_file_untouched() {
+  # Loading a project override must NEVER mutate the global config file on disk.
+  local c="$WORK/2l_iso.json"; cfg_fixture "$c"
+  local p="$WORK/2l_proj_iso"; proj_override "$p"
+  local before; before="$(sha "$c")"
+  load_proj "$c" "$p" 'pm_tool_provider tasks; pm_tool_provider deploy; pm_tools' >/dev/null 2>&1
+  assert_eq "$before" "$(sha "$c")"                       "isolation: global config file byte-for-byte unchanged"
+  assert_eq "linear"  "$(jq -r '.tools.tasks.provider' "$c")" "isolation: global tasks provider still linear on disk"
+}
+
+t_2l_global_only_unchanged; t_2l_override_wins; t_2l_field_fallthrough; t_2l_project_only_tool
+t_2l_undefined_both_degrades; t_2l_tools_union; t_2l_clear_and_swap; t_2l_no_override_is_global
+t_2l_global_file_untouched
 
 # ── install.sh idempotency + dry-run ─────────────────────────────────────────────
 section "install.sh"

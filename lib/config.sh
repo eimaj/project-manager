@@ -21,15 +21,30 @@
 #   PM_SESSIONS_DIR     absolute per-session marker dir ($PM_FRAMEWORK_ROOT/sessions)
 #   PM_CONFIG_RESOLVED  absolute path of the config actually read (the accessors read this)
 #
-# Accessors (all read $PM_CONFIG_RESOLVED via jq; no global per-tool state):
-#   pm_tools                     echo every tool name, one per line
-#   pm_tool_defined <name>       return 0 iff tools.<name>.provider is non-empty and != "none"
+# TWO-LEVEL RESOLUTION (global registry + optional per-project override):
+#   The accessors resolve the EFFECTIVE tool = per-project override, else global registry.
+#   Precedence:  project.tools[name]  >  global.tools[name]  >  undefined (degrade).
+#   Without a loaded project the behavior is EXACTLY the global-only path (unchanged).
+#
+#   pm_load_project <project_root>   layer <project_root>/.pm/config.json's optional `tools{}`
+#                                    override on top of the global registry for THIS shell.
+#                                    Call with no arg (or "") to CLEAR the override. Read-only:
+#                                    it never mutates the global ~/.config/pm/config.json.
+#                                    Exports PM_PROJECT_ROOT + PM_PROJECT_TOOLS (compact JSON).
+#
+# Accessors (all read $PM_CONFIG_RESOLVED via jq, layering PM_PROJECT_TOOLS; no per-tool state):
+#   pm_tools                     echo every EFFECTIVE tool name (global ∪ project), one per line
+#   pm_tool_defined <name>       return 0 iff EFFECTIVE tools.<name>.provider is non-empty & != "none"
 #                                (THE degrade predicate skills branch on)
-#   pm_tool_provider <name>      echo tools.<name>.provider, or "none" when absent/blank
-#   pm_tool_root <name>          echo tools.<name>.root (~ / ${HOME} expanded), or "" when unset
-#   pm_tool_skills <name>        echo tools.<name>.skills[], one per line ("" when none)
-#   pm_tool_field <name> <field> echo tools.<name>.<field> (generic escape hatch)
+#   pm_tool_provider <name>      echo effective tools.<name>.provider, or "none" when absent/blank
+#   pm_tool_root <name>          echo effective tools.<name>.root (~ / ${HOME} expanded), "" if unset
+#   pm_tool_skills <name>        echo effective tools.<name>.skills[], one per line ("" when none)
+#   pm_tool_field <name> <field> echo effective tools.<name>.<field> (generic escape hatch)
 #   pm_tool_root_or_notes <name> pm_tool_root <name> if set, else $PM_NOTES_ROOT
+#
+# The effective tools map is  (global.tools // {}) * (project.tools // {})  — a per-field deep
+# merge, so a project override's provider/root/skills win while any field it omits falls through
+# to the global tool. A tool present ONLY in the project override is fully defined + resolvable.
 
 # _pm_expand <path> — expand a leading ~ and any ${HOME} to $HOME. Single place both the
 # framework-path exports and pm_tool_root reuse.
@@ -98,45 +113,83 @@ pm_load_config() {
   return 0
 }
 
-# pm_tools — echo every defined tool name, one per line.
+# pm_load_project [<project_root>] — layer a per-project tool override onto the global registry
+# for this shell. Reads the OPTIONAL `tools{}` object from <project_root>/.pm/config.json and
+# records it in PM_PROJECT_TOOLS (compact JSON); the accessors then resolve the effective tool as
+# project-override ?? global. Read-only w.r.t. the global config (never writes ~/.config/pm).
+#   - No arg / "" ................ CLEAR the override (accessors revert to global-only).
+#   - Missing/unparseable .pm ..... treated as no override (global-only), no error — degrade clean.
+#   - Loading a different root .... SWAPS the override wholesale (no leakage between projects).
+# Always succeeds (returns 0): a project with no override is a valid, common case.
+pm_load_project() {
+  local root="${1:-}"
+  export PM_PROJECT_ROOT="" PM_PROJECT_TOOLS="{}"
+  [[ -z "$root" ]] && return 0                       # explicit clear
+  local cfg="$root/.pm/config.json"
+  [[ -f "$cfg" ]] || return 0                        # no per-project config → global-only
+  command -v jq >/dev/null 2>&1 || return 0
+  # Extract .tools as an object; a missing/non-object tools block degrades to {} (no override).
+  local t
+  t=$(jq -c '(.tools // {}) | if type == "object" then . else {} end' "$cfg" 2>/dev/null) || t="{}"
+  [[ -n "$t" ]] || t="{}"
+  export PM_PROJECT_ROOT="$root"
+  export PM_PROJECT_TOOLS="$t"
+  return 0
+}
+
+# _pm_proj_tools — echo the per-project override object, or "{}" when none is loaded.
+# Isolated helper so the ${VAR:-default} default cannot be brace-mis-parsed by the accessors.
+_pm_proj_tools() {
+  local p="${PM_PROJECT_TOOLS:-}"
+  [[ -n "$p" ]] || p='{}'
+  printf '%s' "$p"
+}
+
+# pm_tools — echo every EFFECTIVE tool name (global ∪ project override), one per line.
 pm_tools() {
-  jq -r '(.tools // {}) | keys[]' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
+  jq -r --argjson proj "$(_pm_proj_tools)" \
+    '((.tools // {}) * $proj) | keys[]' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
 }
 
 # pm_tool_defined <name> — 0 iff tools.<name> exists AND its provider is non-empty and
 # != "none". This is THE single degrade predicate every skill branches on.
 pm_tool_defined() {
   local name="$1" p
-  p=$(jq -r --arg n "$name" '(.tools[$n].provider // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
+  p=$(jq -r --arg n "$name" --argjson proj "$(_pm_proj_tools)" \
+    '(((.tools // {}) * $proj)[$n].provider // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
   [[ -n "$p" && "$p" != "none" ]]
 }
 
-# pm_tool_provider <name> — echo the provider, or "none" when absent/blank.
+# pm_tool_provider <name> — echo the effective provider, or "none" when absent/blank.
 pm_tool_provider() {
   local name="$1" p
-  p=$(jq -r --arg n "$name" '(.tools[$n].provider // "none")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
+  p=$(jq -r --arg n "$name" --argjson proj "$(_pm_proj_tools)" \
+    '(((.tools // {}) * $proj)[$n].provider // "none")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
   [[ -z "$p" ]] && p="none"
   printf '%s\n' "$p"
 }
 
-# pm_tool_root <name> — echo the tool's output sink (~ / ${HOME} expanded), "" when unset.
+# pm_tool_root <name> — echo the effective tool's output sink (~ / ${HOME} expanded), "" when unset.
 pm_tool_root() {
   local name="$1" r
-  r=$(jq -r --arg n "$name" '(.tools[$n].root // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
+  r=$(jq -r --arg n "$name" --argjson proj "$(_pm_proj_tools)" \
+    '(((.tools // {}) * $proj)[$n].root // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null)
   [[ -n "$r" ]] && r="$(_pm_expand "$r")"
   printf '%s\n' "$r"
 }
 
-# pm_tool_skills <name> — echo the tool's related skills, one per line ("" when none).
+# pm_tool_skills <name> — echo the effective tool's related skills, one per line ("" when none).
 pm_tool_skills() {
   local name="$1"
-  jq -r --arg n "$name" '(.tools[$n].skills // [])[]' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
+  jq -r --arg n "$name" --argjson proj "$(_pm_proj_tools)" \
+    '(((.tools // {}) * $proj)[$n].skills // [])[]' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
 }
 
-# pm_tool_field <name> <field> — generic: echo tools.<name>.<field> ("" when absent).
+# pm_tool_field <name> <field> — generic: echo effective tools.<name>.<field> ("" when absent).
 pm_tool_field() {
   local name="$1" field="$2"
-  jq -r --arg n "$name" --arg f "$field" '(.tools[$n][$f] // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
+  jq -r --arg n "$name" --arg f "$field" --argjson proj "$(_pm_proj_tools)" \
+    '(((.tools // {}) * $proj)[$n][$f] // "")' "${PM_CONFIG_RESOLVED:-}" 2>/dev/null || true
 }
 
 # pm_tool_root_or_notes <name> — the tool's own root if set, else $PM_NOTES_ROOT.

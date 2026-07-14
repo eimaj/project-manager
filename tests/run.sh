@@ -191,25 +191,25 @@ t_sc_autoship_flag_and_degrades() {
 
 t_sc_unknown_fields_preserved() {
   # The core fix: re-init MERGES managed fields onto the existing config, so unknown/extra
-  # fields (linear_project, granola_folder, crrt_tag, ...) AND hand-set tool_refs entries survive
+  # fields (custom_project, custom_folder, custom_tag, ...) AND hand-set tool_refs entries survive
   # verbatim, while a new --tool-ref merges in (last-wins per name) without dropping the others.
   local d="$WORK/sc_unknown"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
   local cfg="$d/pa/.pm/config.json"
   PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" --tool-ref meetings=Folder1 >/dev/null 2>&1
   # hand-add unknown fields the scaffold does not manage AND a hand-set tool_refs entry
   local tmp; tmp="$(mktemp)"
-  jq '.linear_project="PROJ-123" | .granola_folder="Team Sync" | .crrt_tag="foo"
-      | .linear_project_id="abc-123" | .tool_refs.tasks="HAND-SET"' \
+  jq '.custom_project="PROJ-123" | .custom_folder="Team Sync" | .custom_tag="foo"
+      | .custom_project_id="abc-123" | .tool_refs.tasks="HAND-SET"' \
     "$cfg" > "$tmp" && mv "$tmp" "$cfg"
   local created1; created1="$(jq -r '.created' "$cfg")"
   sleep 1
   # re-init with a changed name + a changed/added tool-ref; unknowns + hand-set refs must survive
   PM_FRAMEWORK_ROOT="$fw" PM_NAME=Renamed PM_ROOT="$d/pa" "$SC" \
     --tool-ref meetings=Folder2 --tool-ref todo=newtag >/dev/null 2>&1
-  assert_eq "PROJ-123"  "$(jq -r '.linear_project' "$cfg")"     "re-init preserves unknown linear_project"
-  assert_eq "Team Sync" "$(jq -r '.granola_folder' "$cfg")"     "re-init preserves unknown granola_folder"
-  assert_eq "foo"       "$(jq -r '.crrt_tag' "$cfg")"           "re-init preserves unknown crrt_tag"
-  assert_eq "abc-123"   "$(jq -r '.linear_project_id' "$cfg")"  "re-init preserves unknown linear_project_id"
+  assert_eq "PROJ-123"  "$(jq -r '.custom_project' "$cfg")"     "re-init preserves unknown custom_project"
+  assert_eq "Team Sync" "$(jq -r '.custom_folder' "$cfg")"      "re-init preserves unknown custom_folder"
+  assert_eq "foo"       "$(jq -r '.custom_tag' "$cfg")"         "re-init preserves unknown custom_tag"
+  assert_eq "abc-123"   "$(jq -r '.custom_project_id' "$cfg")"  "re-init preserves unknown custom_project_id"
   assert_eq "Renamed"   "$(jq -r '.name' "$cfg")"               "re-init updates managed name"
   assert_eq "HAND-SET"  "$(jq -r '.tool_refs.tasks' "$cfg")"    "re-init preserves hand-set tool_refs entry"
   assert_eq "Folder2"   "$(jq -r '.tool_refs.meetings' "$cfg")" "re-init updates existing tool_refs entry"
@@ -271,7 +271,7 @@ t_sc_malformed_prior_new() {
   # A malformed/empty prior config is treated as new: no crash, no garbage carried over.
   local d="$WORK/sc_malformed"; local fw="$d/fw"
   mkdir -p "$fw" "$d/junk/.pm"
-  printf 'not json{ linear_project garbage' > "$d/junk/.pm/config.json"
+  printf 'not json{ custom_project garbage' > "$d/junk/.pm/config.json"
   PM_FRAMEWORK_ROOT="$fw" PM_NAME=Fresh PM_ROOT="$d/junk" "$SC" --tool-ref tasks=T >/dev/null 2>&1
   local cfg="$d/junk/.pm/config.json"
   if jq -e . "$cfg" >/dev/null 2>&1; then pass "malformed prior -> valid JSON written"
@@ -279,7 +279,7 @@ t_sc_malformed_prior_new() {
   assert_eq "Fresh" "$(jq -r '.name' "$cfg")"        "malformed prior -> managed name set"
   assert_eq "[]"    "$(jq -c '.collaborators' "$cfg")" "malformed prior -> collaborators []"
   assert_eq "false" "$(jq -c '.auto_ship' "$cfg")"     "malformed prior -> auto_ship false"
-  assert_eq "null"  "$(jq -r '.linear_project' "$cfg")" "malformed prior -> no garbage carried over"
+  assert_eq "null"  "$(jq -r '.custom_project' "$cfg")" "malformed prior -> no garbage carried over"
 }
 
 t_sc_nonobject_refs_atomic() {
@@ -358,9 +358,9 @@ cfg_fixture() {
     "notes_root": "~/fixture_notes"
   },
   "tools": {
-    "meetings": { "provider": "granola", "root": "~/shared_sink", "skills": ["granola-import", "meeting-summarize"] },
+    "meetings": { "provider": "meetingapp", "root": "~/shared_sink", "skills": ["notes-import", "meeting-summary"] },
     "notes":    { "provider": "filesystem", "root": "~/shared_sink", "skills": [] },
-    "tasks":    { "provider": "linear" },
+    "tasks":    { "provider": "tracker" },
     "home":     { "provider": "filesystem", "root": "${HOME}/x/y" },
     "off":      { "provider": "none" },
     "blank":    { "provider": "" }
@@ -403,7 +403,7 @@ t_cfg_tool_defined() {
 
 t_cfg_tool_provider() {
   local c="$WORK/cfg_provider.json"; cfg_fixture "$c"
-  assert_eq "granola" "$(load_and_echo "$c" 'pm_tool_provider meetings')" "provider: filled value"
+  assert_eq "meetingapp" "$(load_and_echo "$c" 'pm_tool_provider meetings')" "provider: filled value"
   assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider off')"      "provider: explicit none"
   assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider blank')"    "provider: blank -> none"
   assert_eq "none"    "$(load_and_echo "$c" 'pm_tool_provider ghost')"    "provider: absent -> none"
@@ -422,7 +422,7 @@ t_cfg_tool_root() {
 t_cfg_tool_skills() {
   local c="$WORK/cfg_skills.json"; cfg_fixture "$c"
   local got; got="$(load_and_echo "$c" 'pm_tool_skills meetings' | tr '\n' ' ')"
-  assert_eq "granola-import meeting-summarize " "$got"                         "skills: listed one per line"
+  assert_eq "notes-import meeting-summary " "$got"                             "skills: listed one per line"
   assert_eq "" "$(load_and_echo "$c" 'pm_tool_skills notes')"                  "skills: empty array -> empty"
   assert_eq "" "$(load_and_echo "$c" 'pm_tool_skills tasks')"                  "skills: absent -> empty"
 }
@@ -435,7 +435,7 @@ t_cfg_tool_root_or_notes() {
 
 t_cfg_tool_field() {
   local c="$WORK/cfg_field.json"; cfg_fixture "$c"
-  assert_eq "granola" "$(load_and_echo "$c" 'pm_tool_field meetings provider')" "field: returns arbitrary sub-key"
+  assert_eq "meetingapp" "$(load_and_echo "$c" 'pm_tool_field meetings provider')" "field: returns arbitrary sub-key"
   assert_eq ""        "$(load_and_echo "$c" 'pm_tool_field tasks root')"        "field: absent sub-key -> empty"
 }
 
@@ -489,7 +489,7 @@ section "config.sh two-level"
 load_proj() { PM_CONFIG="$1" bash -c "source '$REPO/lib/config.sh'; pm_load_config --quiet >/dev/null 2>&1; pm_load_project '$2' >/dev/null 2>&1; $3"; }
 
 # Write a project .pm/config.json under $1 carrying an optional tools{} override:
-#   - overrides `tasks` provider (global fixture has tasks->linear)
+#   - overrides `tasks` provider (global fixture has tasks->tracker)
 #   - overrides `meetings` provider ONLY (root+skills must fall through to global per-field)
 #   - defines a project-ONLY tool `deploy`
 proj_override() {
@@ -511,7 +511,7 @@ JSON
 t_2l_global_only_unchanged() {
   # With NO project loaded, resolution is exactly the global-only path.
   local c="$WORK/2l_g.json"; cfg_fixture "$c"
-  assert_eq "linear" "$(load_and_echo "$c" 'pm_tool_provider tasks')"  "no project: tasks resolves global (linear)"
+  assert_eq "tracker" "$(load_and_echo "$c" 'pm_tool_provider tasks')"  "no project: tasks resolves global (tracker)"
   assert_eq "yes"    "$(load_and_echo "$c" 'pm_tool_defined tasks && echo yes || echo no')" "no project: global tool defined"
 }
 
@@ -529,7 +529,7 @@ t_2l_field_fallthrough() {
   assert_eq "otter"             "$(load_proj "$c" "$p" 'pm_tool_provider meetings')" "fall-through: provider overridden"
   assert_eq "$HOME/shared_sink" "$(load_proj "$c" "$p" 'pm_tool_root meetings')"     "fall-through: global root retained"
   local got; got="$(load_proj "$c" "$p" 'pm_tool_skills meetings' | tr '\n' ' ')"
-  assert_eq "granola-import meeting-summarize " "$got"                               "fall-through: global skills retained"
+  assert_eq "notes-import meeting-summary " "$got"                                   "fall-through: global skills retained"
 }
 
 t_2l_project_only_tool() {
@@ -577,7 +577,7 @@ JSON
   ")"
   assert_contains "$out" "A:jira:Y"   "swap: project A override + project-only deploy active"
   assert_contains "$out" "B:asana:N"  "swap: project B override replaces A (deploy gone)"
-  assert_contains "$out" "NONE:linear:N" "clear: reverts to global-only"
+  assert_contains "$out" "NONE:tracker:N" "clear: reverts to global-only"
 }
 
 t_2l_no_override_is_global() {
@@ -585,9 +585,9 @@ t_2l_no_override_is_global() {
   local c="$WORK/2l_no.json"; cfg_fixture "$c"
   local p1="$WORK/2l_notools"; mkdir -p "$p1/.pm"
   echo '{"name":"X","root":"unused","tool_refs":{"tasks":"T"}}' > "$p1/.pm/config.json"
-  assert_eq "linear" "$(load_proj "$c" "$p1" 'pm_tool_provider tasks')" "no tools block: resolves global"
+  assert_eq "tracker" "$(load_proj "$c" "$p1" 'pm_tool_provider tasks')" "no tools block: resolves global"
   local p2="$WORK/2l_nopm"; mkdir -p "$p2"                # no .pm/config.json at all
-  assert_eq "linear" "$(load_proj "$c" "$p2" 'pm_tool_provider tasks')" "no .pm config: resolves global"
+  assert_eq "tracker" "$(load_proj "$c" "$p2" 'pm_tool_provider tasks')" "no .pm config: resolves global"
 }
 
 t_2l_global_file_untouched() {
@@ -597,7 +597,7 @@ t_2l_global_file_untouched() {
   local before; before="$(sha "$c")"
   load_proj "$c" "$p" 'pm_tool_provider tasks; pm_tool_provider deploy; pm_tools' >/dev/null 2>&1
   assert_eq "$before" "$(sha "$c")"                       "isolation: global config file byte-for-byte unchanged"
-  assert_eq "linear"  "$(jq -r '.tools.tasks.provider' "$c")" "isolation: global tasks provider still linear on disk"
+  assert_eq "tracker"  "$(jq -r '.tools.tasks.provider' "$c")" "isolation: global tasks provider still tracker on disk"
 }
 
 t_2l_global_only_unchanged; t_2l_override_wins; t_2l_field_fallthrough; t_2l_project_only_tool

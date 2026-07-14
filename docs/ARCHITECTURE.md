@@ -88,11 +88,23 @@ identical for everyone, is symlinked — exactly the logTool convention.
 
 | File | Written by | Purpose |
 |---|---|---|
-| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`name`, `root`, `tool_refs`, team, keywords, collaborators, auto_ship, session_color) |
+| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`name`, `root`, `tool_refs`, team, keywords, collaborators, auto_ship, session_color); MAY also carry an optional `tools{}` **override** block (see below) |
 | `CONTEXT.md` | `pm-init` (seed; never clobbered) | stable hand-edited overview |
 | `CALENDAR.md` | `pm-init` seed; `pm-start` regenerates Synced section | forward-looking dates; manual entries below the `<!-- PM:MANUAL -->` marker are preserved |
 | `meetings.jsonl` | `pm-start` appends pointers | `{meeting_id, date, title, path}` pointers into the meeting archive — never transcript copies |
+| `reports/` | `pm-init` (seed dir; never clobbered) | this project's OWN report artifacts — distinct from a tool's global `root` (the shared, cross-project sink). See [SLOTS.md](SLOTS.md#per-project-reports-rootreports) |
 | `LAST-SESSION.md` | `pm-end` (per-session block via `handoff-write.sh`) | forward handoff; one block per session, never clobbered across sessions |
+
+### Per-project tool override
+
+A project's `.pm/config.json` may carry an optional `tools{}` block that overrides the global
+registry **for that project only**. After `pm_load_project <root>`, the `config.sh` accessors
+resolve the **effective** tool = project override ?? global (per field): precedence is
+`project override > global > undefined (degrade)`. The override is **read-only** w.r.t. the global
+`~/.config/pm/config.json` (never written back) and is scoped to the current shell, so projects
+never leak into one another. A hand-added `tools{}` block survives re-init verbatim (the
+scaffold's deep-merge preserves it, like any unknown field). See
+[SLOTS.md](SLOTS.md#two-levels-global-registry--per-project-override) for the full contract.
 
 `scaffold.sh` generates these per-project files **inline** (heredocs + `jq`), not from a
 template directory — the seeds are conditional (team lists, pointer detection, per-tool ref

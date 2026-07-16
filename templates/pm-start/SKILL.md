@@ -22,13 +22,14 @@ time, adjust the `tool:<name>` references below to match.
 
 **Use when:** opening a project for a work session — "start on <project>", "pick up where I left off", "/pm-start @path/to/root". Run once at session open.
 **Do NOT use when:** you just want a rerunnable read-only briefing with no live network sync → use `/pm-status`. Or wrapping up → use `/pm-end`.
-**Inputs expected:** `@<path>` to the project root on first run in a session (sets the marker). Subsequent commands in the same session read the marker.
-**Outputs produced:** session marker `{{framework_root}}/sessions/<session-id>`; new meeting pointers appended to `<root>/meetings.jsonl`; regenerated `<root>/CALENDAR.md`; a printed briefing; and a paste-ready `/rename` + `/color` block.
+**Inputs expected:** `@<path>` to the project root on first run in a session (sets the marker). Subsequent commands in the same session read the marker. Optional `--full` (alias `--force`) anywhere in the args forces a complete live re-sync even if one already ran today.
+**Same-day re-run:** if a COMPLETE run already happened today for this project (per-project stamp `<root>/.pm/.last-start`), pm-start skips the repeating LIVE sync and just re-briefs from cache (like `/pm-status`) — pass `--full` to override.
+**Outputs produced:** session marker `{{framework_root}}/sessions/<session-id>`; new meeting pointers appended to `<root>/meetings.jsonl`; regenerated `<root>/CALENDAR.md`; a printed briefing; a same-day daily stamp `<root>/.pm/.last-start` (COMPLETE runs only); and a paste-ready `/rename` + `/color` block.
 
 ## Related Skills
 
 - [`pm-init`](../pm-init/SKILL.md) — one-time scaffold (run before the first `/pm-start`)
-- [`pm-status`](../pm-status/SKILL.md) — cache-only rerunnable briefing
+- [`pm-status`](../pm-status/SKILL.md) — cache-only rerunnable briefing. **The same-day-skip path delegates to this behavior** — it reads the same cached project files and prints the same briefing, minus the guard. Do not re-implement its cache-read here.
 - [`pm-end`](../pm-end/SKILL.md) — EOD capture
 
 ---
@@ -53,6 +54,17 @@ time, adjust the `tool:<name>` references below to match.
 source "{{framework_root}}/lib/config.sh"
 pm_load_config || { echo "pm: no config — run /pm-generate first."; exit 1; }
 
+# Parse invocation args: split the project @<path> from the --full/--force override token
+# so the flag is never mistaken for the path. FULL=1 forces the COMPLETE flow (all steps live).
+FULL=0; ARG_PATH=""
+for tok in "$@"; do
+  case "$tok" in
+    --full|--force) FULL=1 ;;
+    @*)             ARG_PATH="${tok#@}" ;;    # @path → path
+    *)              ARG_PATH="${ARG_PATH:-$tok}" ;;  # tolerate a bare path
+  esac
+done
+
 # Source the resolver so the mint write below reuses its EXACT anchor derivation (no drift).
 . "{{framework_root}}/lib/session.sh"
 SID="$(pm_session_id)"                            # prefers CLAUDE_CODE_SESSION_ID (a real UUID)
@@ -73,8 +85,8 @@ if [[ "$SID" =~ ^shell- || "$SID" =~ ^tty- ]]; then
 fi
 
 MARKER="{{framework_root}}/sessions/$SID"
-# If the user passed @<path>, that path is the project root. Else read existing marker:
-ROOT="<resolved @path>"                          # or: ROOT="$(cat "$MARKER" 2>/dev/null)"
+# If the user passed @<path> (parsed into $ARG_PATH above), that is the root. Else read the marker:
+ROOT="${ARG_PATH:-$(cat "$MARKER" 2>/dev/null)}"
 test -f "$ROOT/.pm/config.json" || { echo "Not a PM project (run /pm-init): $ROOT"; exit 1; }
 mkdir -p "{{framework_root}}/sessions"
 printf '%s\n' "$ROOT" > "$MARKER"
@@ -99,16 +111,39 @@ SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
 COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster for the Step 6 quick-reference
 ```
 
+Decide whether the repeating LIVE sync runs, or this is a same-day re-brief. Detection is **per-project** (keyed by `$ROOT`), independent of session id — multiple sessions in a day share one stamp:
+
+```bash
+# --- Same-day "already ran today" detection ---
+# Stamp <root>/.pm/.last-start stores the date+time of the last COMPLETE (full-sync) run.
+# Already-ran-today = stamp exists AND its stored date equals today's runtime date.
+STAMP="$ROOT/.pm/.last-start"
+TODAY="$(date +%F)"                                   # runtime date — never hardcode
+SKIP_SYNC=0
+if [[ "$FULL" -eq 0 && -r "$STAMP" ]]; then
+  LAST_DAY="$(cut -d' ' -f1 "$STAMP" 2>/dev/null)"    # stored as "YYYY-MM-DD HH:MM"
+  LAST_TIME="$(cut -d' ' -f2 "$STAMP" 2>/dev/null)"
+  if [[ "$LAST_DAY" == "$TODAY" ]]; then
+    SKIP_SYNC=1
+    echo "pm: already ran today (${LAST_TIME:-$LAST_DAY}) — skipping live sync. Use --full to force a complete re-sync."
+  fi
+fi
+# SKIP_SYNC=1 → skip Steps 2, 3, 3b, 4 and the LIVE pulls in Step 5; still run the LOCAL
+# reads in Step 5 and Steps 6–8. FULL=1 (or no same-day stamp) → COMPLETE flow, all steps live.
+```
+
 (Session branding — `/rename` + `/color` — is printed at the end in Step 8 for the user to paste; slash commands can't be invoked programmatically.)
 
 ### Step 2 — Meeting catch-up (LIVE) — `tool:meetings`
 
+- **If `SKIP_SYNC=1` (already ran today):** skip this step entirely — the cache-only briefing in Step 6 covers it. Only a COMPLETE run (`FULL=1` or first run of the day) does live catch-up.
 - **If `pm_tool_defined meetings` is false:** skip meeting catch-up entirely. Print: "tool:meetings not defined — skipping meeting catch-up (import meetings by hand)." Do not attempt any meeting fetch.
 - **Else:** run the catch-up **inline in the main session** — MCP-backed meeting tools can fail silently inside subagents. Invoke the `meetings` tool's configured provider (a meeting-import/catch-up flow — see `pm_tool_skills meetings`) to import new meetings into the archive at `pm_tool_root_or_notes meetings` (transcripts + an import-log index).
   - _related: run `pm_tool_skills meetings` — surface the tool's linked skills as discovery hints; never auto-invoke._
 
 ### Step 3 — Append new meeting pointers — `tool:meetings`
 
+- **If `SKIP_SYNC=1` (already ran today):** skip — the day's pointers were appended by the earlier COMPLETE run; Step 6 reads them from `meetings.jsonl`.
 - **If `pm_tool_defined meetings` is false:** skip (no source to map from).
 - **Else:** map the project's meetings (those matching `$MEETINGS_SCOPE`, or falling back to keyword title match against `$KEYWORDS` when `$MEETINGS_SCOPE` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`). **The dedupe read and the append run inside one lock** so two concurrent tabs can't both read "id absent" and both append the same pointer:
 
@@ -128,10 +163,13 @@ COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster
 
 ### Step 3b — Inbox scan (LIVE) — `tool:email`
 
+- **If `SKIP_SYNC=1` (already ran today):** skip the live inbox scan — a same-day re-brief does not re-hit mail. (The earlier COMPLETE run surfaced it; it is not written to a file, so a re-brief simply omits the fresh inbox section.)
 - **If `pm_tool_defined email` is false:** skip the inbox scan and say so: "tool:email not defined — skipping inbox scan." Do not attempt any mail fetch.
 - **Else:** pull this project's action items / commitments / threads needing a response from the `email` tool's configured provider, filtered by `$EMAIL_SCOPE` (the project's label/folder/sender filter), falling back to keyword subject match against `$KEYWORDS` when `$EMAIL_SCOPE` is blank. **Run inline in the main session — MCP-backed mail tools can fail silently inside subagents.** Surface the results in the briefing (Step 6); do not write them to a project file. If `$EMAIL_SCOPE` is blank, note it as a TODO.
 
 ### Step 4 — Regenerate CALENDAR.md — `tool:calendar` + `tool:tasks` + `tool:github`
+
+- **If `SKIP_SYNC=1` (already ran today):** skip regeneration — `CALENDAR.md` was rebuilt by the earlier COMPLETE run; Step 6 reads it as-is (same as `/pm-status`). Only a COMPLETE run regenerates it.
 
 The **Synced** section (above the `<!-- PM:MANUAL -->` marker) is rebuilt from up to three tools, each guarded independently; **everything below the marker is preserved verbatim** (hand-added dated items). Build the Synced body as two sub-sections (keep them separate — do not interleave):
 
@@ -166,7 +204,9 @@ awk -v s="<!-- PM:SESSION $SID START -->" -v e="<!-- PM:SESSION $SID END -->" \
 grep -oE 'PM:SESSION [^ ]+ START' "$ROOT/LAST-SESSION.md" | grep -v " $SID " || true
 ```
 
-Then pull open work (each bullet guarded by `pm_tool_defined <name>`; omit with a note when undefined):
+These two LOCAL handoff reads always run — even on a same-day re-brief (they are cheap, cached files).
+
+Then pull open work from the LIVE trackers. **If `SKIP_SYNC=1` (already ran today):** skip this pull entirely — do not hit `tool:todo` / `tool:tasks` / `tool:github` / `tool:logs` live; the Step 6 briefing surfaces open work from the cached files instead (mirroring `/pm-status`). On a COMPLETE run, pull each bullet (guarded by `pm_tool_defined <name>`; omit with a note when undefined):
 
 - **`tool:todo`** — open tasks for this project from its configured provider, filtered by `$TODO_SCOPE`. Undefined ⇒ "tool:todo not defined — tasks tracked manually in CONTEXT/notes".
 - **`tool:tasks`** — open issues in `$TASKS_SCOPE` (the same tool that fed CALENDAR due dates, here for the open-work list).
@@ -174,6 +214,8 @@ Then pull open work (each bullet guarded by `pm_tool_defined <name>`; omit with 
 - **`tool:logs`** — recent log entries matching `$KEYWORDS` (last few days) for recent decisions/actions; read the log store under `pm_tool_root_or_notes logs` (or use the provider's search skill, see `pm_tool_skills logs`).
 
 ### Step 6 — Print the briefing
+
+Always runs (both COMPLETE and same-day re-brief). **On a same-day re-brief (`SKIP_SYNC=1`) this is exactly the cache-only briefing `/pm-status` prints** — synthesize from the cached files (`LAST-SESSION.md`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`) and skip any section whose data comes only from a LIVE pull that did not run (e.g. the fresh inbox). Do not re-implement pm-status's cache read — mirror it.
 
 Print these sections in order (omit a section when its tool is undefined, with a one-line note that it was skipped). Where a section is fed by a tool, append a one-line **related-skills** hint from `pm_tool_skills <name>` (discovery only — slash commands can't be auto-invoked):
 
@@ -189,7 +231,23 @@ Print these sections in order (omit a section when its tool is undefined, with a
 ### Step 7 — Log it — `tool:logs`
 
 - **If `pm_tool_defined logs` is false:** skip with a note.
-- **Else:** record via the `logs` tool's configured provider an action entry like: `pm-start: opened '<name>' — synced N new meetings, regenerated CALENDAR, briefed`.
+- **Else:** record via the `logs` tool's configured provider an action entry — matched to the run type:
+  - COMPLETE run: `pm-start: opened '<name>' — synced N new meetings, regenerated CALENDAR, briefed`.
+  - Same-day re-brief (`SKIP_SYNC=1`): `pm-start: re-opened '<name>' (same-day) — skipped live sync, re-briefed from cache`.
+
+### Step 7b — Stamp the completed full sync — COMPLETE runs only
+
+Record today's date + time as the last COMPLETE (full-sync) run, so a later same-day invocation detects it (Step 1) and re-briefs instead of re-syncing.
+
+```bash
+# Only a COMPLETE run writes the stamp. A skipped (cache-only) re-run deliberately does NOT
+# touch it: the stored value must stay the date-of-last-FULL-sync so the "already ran today
+# (HH:MM)" reference keeps pointing at the real last sync, not the last re-brief.
+if [[ "$SKIP_SYNC" -eq 0 ]]; then
+  mkdir -p "$ROOT/.pm"
+  printf '%s %s\n' "$(date +%F)" "$(date +%H:%M)" > "$ROOT/.pm/.last-start"
+fi
+```
 
 ### Step 8 — Print the session branding block (paste to apply)
 
@@ -206,6 +264,7 @@ Print these sections in order (omit a section when its tool is undefined, with a
 ## Rules
 
 - **This is the LIVE-sync entry point.** `/pm-status` is cache-only; do not duplicate live sync there.
+- **Same-day re-run skips the repeating LIVE sync.** Detection is per-project via `<root>/.pm/.last-start` (stored date == `date +%F` today), independent of session id. When already-ran-today, print the one-line notice, skip Steps 2/3/3b/4 and the Step 5 LIVE pulls, and re-brief from cache (mirroring `/pm-status`); still run Step 1 (marker), the Step 5 LOCAL reads, and Steps 6–8. `--full` (alias `--force`) anywhere in the args forces the COMPLETE flow. **Only a COMPLETE run writes/updates the stamp** — a skipped re-brief must not overwrite the date-of-last-full-sync.
 - **Session id: prefer the harness UUID, mint only as a fallback.** When `session.sh` returns a real UUID (from `CLAUDE_CODE_SESSION_ID` etc.), use it verbatim — never mint. Only when it returns a WEAK id (`tty-…`/`shell-…`) does pm-start mint a UUID and persist it to `{{framework_root}}/sessions/.mint/<anchor>`; this is the ONLY skill that writes the mint file. `session.sh` (used by `/pm-status` and `/pm-end`) only ever READS it, so all three resolve the same id.
 - **Meeting catch-up runs inline** — never delegate the meeting fetch to a subagent (MCP can fail silently there).
 - **Every tool is guarded by `pm_tool_defined <name>`** — when a tool is undefined, skip its sync and print "tool:<name> not defined — skipping <capability>" (naming the tool's manual skill where useful). Never fabricate data for an undefined tool.
@@ -216,4 +275,4 @@ Print these sections in order (omit a section when its tool is undefined, with a
 
 ## Signal Keywords
 <!-- Comma-separated terms the skills collector uses to attribute learnings to this skill -->
-pm-start, pm-framework, project-briefing, morning-brief, live-sync, meeting-sync, calendar-regen, session-marker, pick-up-where-left-off, project-manager
+pm-start, pm-framework, project-briefing, morning-brief, live-sync, meeting-sync, calendar-regen, session-marker, pick-up-where-left-off, project-manager, same-day-skip, --full, idempotent-rerun, daily-stamp

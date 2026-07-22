@@ -23,16 +23,19 @@
 #   PM_NAME          | --name           project name (required)
 #   PM_ROOT          | --root           absolute folder path = project identity (required)
 #                    | --tool-ref       <name>=<value> per-tool project ref (repeatable, optional)
+#   PM_BRIEFS_DIR    | --briefs-dir     abs dir for /orchestrate-brief output (optional; default <root>/briefs)
 #   PM_TEAM          | --team           comma-separated team members (optional)
 #   PM_KEYWORDS      | --keywords       comma-separated keywords/aliases (optional)
 #   PM_SESSION_COLOR | --session-color  Claude Code session color (optional)
 #   PM_AUTO_SHIP     | --auto-ship      auto-ship pm-end session branch: true|false (optional)
 #
 # Behavior:
-#   - Writes <root>/.pm/config.json, CONTEXT.md, CALENDAR.md, meetings.jsonl, reports/.
-#   - Never clobbers an existing CONTEXT.md / CALENDAR.md / meetings.jsonl / reports/ (re-init safe).
+#   - Writes <root>/.pm/config.json, CONTEXT.md, CALENDAR.md, meetings.jsonl, reports/, briefs/.
+#   - Never clobbers an existing CONTEXT.md / CALENDAR.md / meetings.jsonl / reports/ / briefs/ (re-init safe).
 #   - reports/ is the project-local report sink (this project's own artifacts), distinct from a
 #     tool's GLOBAL `root` in ~/.config/pm/config.json (the shared, cross-project output sink).
+#   - briefs/ (config: briefs_dir, default <root>/briefs) is the project-local /orchestrate-brief
+#     sink, distinct from the orchestrate global {artifact_root}/runs/<session_id>/ sink.
 #   - config.json is merged, not replaced: managed fields update from inputs while any
 #     unknown/extra fields in an existing config (and its `created`) are preserved.
 #   - Registry is deduped by root: existing root → updated in place; new root → appended.
@@ -61,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --name)          PM_NAME="$2"; shift 2 ;;
     --root)          PM_ROOT="$2"; shift 2 ;;
     --tool-ref)      PM_TOOL_REFS+=("$2"); shift 2 ;;
+    --briefs-dir)    PM_BRIEFS_DIR="$2"; shift 2 ;;
     --team)          PM_TEAM="$2"; shift 2 ;;
     --keywords)      PM_KEYWORDS="$2"; shift 2 ;;
     --session-color) PM_SESSION_COLOR="$2"; shift 2 ;;
@@ -97,6 +101,10 @@ prompt PM_SESSION_COLOR "Claude Code session color (red|blue|green|yellow|purple
 
 # ---- normalize ----------------------------------------------------------------
 PM_ROOT="${PM_ROOT/#\~/$HOME}"
+# briefs_dir override: empty = no override (keep prior / default <root>/briefs, computed in the
+# jq merge below). Expand a leading ~ when set.
+PM_BRIEFS_DIR="${PM_BRIEFS_DIR:-}"
+[[ -n "$PM_BRIEFS_DIR" ]] && PM_BRIEFS_DIR="${PM_BRIEFS_DIR/#\~/$HOME}"
 PM_TEAM="${PM_TEAM:-}"
 PM_KEYWORDS="${PM_KEYWORDS:-}"
 PM_SESSION_COLOR="${PM_SESSION_COLOR:-}"
@@ -174,6 +182,7 @@ if jq -n \
   --argjson keywords "$KEYWORDS_JSON" \
   --arg session_color "$PM_SESSION_COLOR" \
   --arg auto_ship_override "$PM_AUTO_SHIP" \
+  --arg briefs_dir_override "$PM_BRIEFS_DIR" \
   --arg created "$CREATED_AT" \
   '
   # keep the prior value when the new input is blank and the prior has one.
@@ -191,6 +200,7 @@ if jq -n \
     keywords:      keeparr($keywords; $prior.keywords),
     collaborators: ($prior.collaborators // []),
     auto_ship:     (if $auto_ship_override == "" then ($prior.auto_ship // false) else ($auto_ship_override == "true") end),
+    briefs_dir:    (if $briefs_dir_override == "" then ($prior.briefs_dir // ($root + "/briefs")) else $briefs_dir_override end),
     session_color: keep($session_color; $prior.session_color),
     created:       ($prior.created // $created)
   }' \
@@ -299,6 +309,19 @@ if [[ -d "$REPORTS_DIR" ]]; then
 else
   mkdir -p "$REPORTS_DIR"
   echo "wrote   $REPORTS_DIR/"
+fi
+
+# ---- seed briefs/ (project-local /orchestrate-brief sink; never clobber) ------
+# Each project keeps its OWN /orchestrate-brief output under briefs_dir (default <root>/briefs) —
+# distinct from the orchestrate GLOBAL {artifact_root}/runs/<session_id>/ sink. Read the resolved
+# path from the config just written (so a custom/preserved briefs_dir is honored). mkdir -p is
+# idempotent: an existing briefs dir (and its contents) is left untouched.
+BRIEFS_DIR="$(jq -r '.briefs_dir // (.root + "/briefs")' "$CONFIG_PATH")"
+if [[ -d "$BRIEFS_DIR" ]]; then
+  echo "kept    $BRIEFS_DIR (exists)"
+else
+  mkdir -p "$BRIEFS_DIR"
+  echo "wrote   $BRIEFS_DIR/"
 fi
 
 # ---- registry: dedupe by root -------------------------------------------------

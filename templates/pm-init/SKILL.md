@@ -24,7 +24,7 @@ name automatically.
 **Use when:** the user wants to set up a project for the PM loop (`/pm-start`, `/pm-status`, `/pm-end`) for the first time, or to update an existing project's config ("re-init", "update the tracker project on X").
 **Do NOT use when:** the project is already initialized and you just want today's briefing → use `/pm-start` (or `/pm-status` for the cache-only view).
 **Inputs expected:** project name + absolute folder root (required); one per-tool ref for each tool the registry defines (`tool:tasks` project, `tool:meetings` folder, `tool:todo` tag, `tool:github` `owner/repo`, …), team, keywords (all optional).
-**Outputs produced:** `<root>/.pm/config.json`, `<root>/CONTEXT.md`, `<root>/CALENDAR.md`, `<root>/meetings.jsonl`, `<root>/reports/`, one deduped line in `{{framework_root}}/registry.jsonl`, and finally an open session via `/pm-start`.
+**Outputs produced:** `<root>/.pm/config.json`, `<root>/CONTEXT.md`, `<root>/CALENDAR.md`, `<root>/meetings.jsonl`, `<root>/reports/`, `<root>/briefs/`, one deduped line in `{{framework_root}}/registry.jsonl`, and finally an open session via `/pm-start`.
 
 ## Related Skills
 
@@ -41,8 +41,9 @@ name automatically.
 - **Per-session marker:** `{{framework_root}}/sessions/<session-id>` contains the active project root (`<session-id>` resolved by `{{framework_root}}/lib/session.sh`). Written by `/pm-start`, read by `/pm-status` and `/pm-end`. Concurrent sessions each hold their own.
 - **Scaffolder:** `{{framework_root}}/lib/scaffold.sh` (the bash generator this skill drives).
 - **Named tools:** the personal registry (`~/.config/pm/config.json`) defines the tools by name; `{{framework_root}}/lib/config.sh` exposes them (`pm_tools`, `pm_tool_defined <name>`, `pm_tool_provider <name>`). This skill asks a per-project ref for **each defined tool** and records them in `.pm/config.json` → `tool_refs`. An undefined tool (or one whose provider is `none`) is simply skipped; the pm-* skills degrade gracefully at runtime.
-- **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`, `reports/`, plus any pre-existing `architecture/`, `adr/`, `plans/`, `meetings/`.
+- **Per-project files** (in `<root>`): `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `LAST-SESSION.md`, `reports/`, `briefs/`, plus any pre-existing `architecture/`, `adr/`, `plans/`, `meetings/`.
 - **Project-local reports vs a tool's global root.** `<root>/reports/` (seeded here) holds this project's OWN report artifacts — distinct from a tool's **global** `root` (`pm_tool_root <name>`, the shared cross-project sink). Reports for the active project go under `<root>/reports/`.
+- **Project-local briefs.** `<root>/briefs/` (seeded here; path in `.pm/config.json` → `briefs_dir`, default `<root>/briefs/`) holds `/orchestrate-brief` output for this project, named `YYYY-MM-DD-<TICKET>-<slug>.md`. `/orchestrate-brief` writes to the orchestrate default `{artifact_root}/runs/<session_id>/`; resolve `briefs_dir` and relocate the brief there, then **commit it** (an uncommitted brief in a shared tree can be wiped by a concurrent session) — do **not** change orchestrate's `artifact_root`.
 - **Per-project tool override.** `.pm/config.json` MAY carry an optional `tools{}` block that overrides the global registry for THIS project only (effective tool = project override ?? global, per field). Any hand-added `tools{}` survives re-init (it is preserved verbatim by the merge, alongside `tool_refs` and other unknown fields).
 - **Collaborators roster (`.pm/config.json` → `collaborators`):** a hand-maintained array (`{name, role, slack, github, email}`) `/pm-start` renders as a quick-reference. A local lookup index agents read to resolve teammates without an MCP call; absent/empty = TODO.
 
@@ -112,13 +113,13 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
      --auto-ship "<true|false — blank keeps the default false>"
    ```
 
-   The `--tool-ref` names must match the registry's tool names (use whatever `pm_tools` reported, not necessarily the defaults shown). The script writes `.pm/config.json` (always) with a `tool_refs` map, seeds `CONTEXT.md` / `CALENDAR.md` / `meetings.jsonl` / `reports/` **only if missing** (re-init never clobbers content), and upserts the registry by `root`.
+   The `--tool-ref` names must match the registry's tool names (use whatever `pm_tools` reported, not necessarily the defaults shown). The script writes `.pm/config.json` (always) with a `tool_refs` map and a `briefs_dir` (default `<root>/briefs`; override with `--briefs-dir`), seeds `CONTEXT.md` / `CALENDAR.md` / `meetings.jsonl` / `reports/` / `briefs/` **only if missing** (re-init never clobbers content), and upserts the registry by `root`.
 
 3. **Verify.**
 
    ```bash
    jq . "<root>/.pm/config.json"
-   ls -la "<root>/.pm/config.json" "<root>/CONTEXT.md" "<root>/CALENDAR.md" "<root>/meetings.jsonl" "<root>/reports"
+   ls -la "<root>/.pm/config.json" "<root>/CONTEXT.md" "<root>/CALENDAR.md" "<root>/meetings.jsonl" "<root>/reports" "<root>/briefs"
    ```
 
 4. **Seed CONTEXT.md pointers.** The scaffolder writes a skeleton with pointers to any existing `architecture/`, `adr/`, `plans/`, `meetings/`. If the project already has real architecture docs, edit `CONTEXT.md` to add a 3-line summary and direct links — keep it short; it is the stable overview `/pm-start` leads with.
@@ -131,7 +132,7 @@ Leave any field you cannot resolve confidently as `""` — never fabricate a han
 
 ## Rules
 
-- **Re-init is safe.** Re-running edits `config.json` and upserts the registry but never clobbers `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, or `reports/` (and its contents). Any hand-added `tools{}` override in `.pm/config.json` is preserved verbatim across re-init.
+- **Re-init is safe.** Re-running edits `config.json` and upserts the registry but never clobbers `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `reports/`, or `briefs/` (and their contents). Any hand-added `tools{}` override and a hand-set `briefs_dir` in `.pm/config.json` are preserved verbatim across re-init.
 - **Do not reimplement** any tool's live logic here — init only writes config + seed files. Live data comes at `/pm-start`.
 - **Only prompt for defined tools** — iterate `pm_tools` + `pm_tool_defined`; never ask for a tool the registry doesn't define.
 - **Blank optionals stay blank** and become TODOs in `CONTEXT.md`. Never fabricate a `tool_refs` value (a tracker project, a meetings folder, …).

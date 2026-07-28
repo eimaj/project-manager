@@ -63,17 +63,34 @@ session_commit() {
   # Record the current branch so we can restore it (the working tree is shared!).
   ORIG_BRANCH=$(git -C "$REPO" symbolic-ref --quiet --short HEAD 2>/dev/null \
     || git -C "$REPO" rev-parse --short HEAD 2>/dev/null)
+  # Capture the project files the CURRENT (base) branch does NOT track. If we commit them
+  # onto the session branch and then restore base, base's checkout would DELETE them from
+  # the SHARED working tree (they become "tracked in old HEAD, absent in new HEAD"). We
+  # re-materialize exactly these after the restore so a snapshot commit never removes the
+  # active project from the tree. (.gitignore'd files are excluded — never added, never
+  # committed, never at risk; and files already tracked on base restore normally.)
+  local -a UNTRACKED=()
+  while IFS= read -r -d '' f; do UNTRACKED+=("$f"); done \
+    < <(git -C "$REPO" ls-files --others --exclude-standard -z -- "$REL/" 2>/dev/null)
   if git -C "$REPO" rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
     git -C "$REPO" checkout "$BRANCH" >/dev/null 2>&1
   else
     git -C "$REPO" checkout -b "$BRANCH" >/dev/null 2>&1
   fi
   git -C "$REPO" add "$REL/"               # only the project folder — nothing outside $REL/
+  local committed=0
   if ! git -C "$REPO" diff --cached --quiet -- "$REL/"; then
     git -C "$REPO" commit -m "docs(pm): $SLUG session $DAY" >/dev/null   # <=50 chars
+    committed=1
   fi
   # Restore the branch the user was on so the shared tree isn't left on the pm branch.
   [[ -n "$ORIG_BRANCH" ]] && git -C "$REPO" checkout "$ORIG_BRANCH" >/dev/null 2>&1 || true
+  # Re-materialize the files base does not track (the restore above deleted them), keeping
+  # them UNTRACKED in the working tree: the snapshot lives on $BRANCH, the tree is unchanged.
+  if [[ "$committed" == 1 && ${#UNTRACKED[@]} -gt 0 ]]; then
+    git -C "$REPO" checkout "$BRANCH" -- "${UNTRACKED[@]}" >/dev/null 2>&1 || true
+    git -C "$REPO" reset -q -- "$REL/" >/dev/null 2>&1 || true
+  fi
   printf '%s\n' "$BRANCH"                   # emit the branch used (for callers / tests)
 }
 

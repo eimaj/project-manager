@@ -834,8 +834,30 @@ t_scm_no_empty_commit() {
   assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "no-change: original branch restored"
 }
 
+t_scm_untracked_folder_preserved() {
+  # Regression: when the project folder is UNTRACKED on the base branch, the snapshot
+  # commit + branch-restore must NOT delete it from the SHARED working tree. (Before the
+  # fix, restoring base removed the folder because it became tracked-in-old-HEAD only.)
+  local d="$WORK/scm_untracked"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  # A brand-new project folder NOT in any commit (untracked on base):
+  mkdir -p "$repo/proj/.pm"
+  echo hello > "$repo/proj/CONTEXT.md"
+  echo '{"name":"P"}' > "$repo/proj/.pm/config.json"
+  local br; br="$("$SCM" --root "$repo/proj" --session "sid-UNTRACKED" --name "Untracked Proj")"
+  assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$br")" "untracked folder: one snapshot commit created"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "untracked folder: original branch restored"
+  assert_eq "yes" "$([[ -f "$repo/proj/CONTEXT.md" && -f "$repo/proj/.pm/config.json" ]] && echo yes || echo no)" \
+    "untracked folder: working-tree files survive the snapshot commit"
+  assert_file_contains "$repo/proj/CONTEXT.md" "hello" "untracked folder: file content intact"
+  assert_eq "??" "$(git -C "$repo" status --porcelain -- proj/CONTEXT.md | cut -c1-2)" \
+    "untracked folder: file stays untracked on base (not silently added)"
+}
+
 if command -v git >/dev/null 2>&1; then
   t_scm_shortsid; t_scm_distinct_branches; t_scm_weird_sid_valid_ref; t_scm_no_empty_commit
+  t_scm_untracked_folder_preserved
 else
   echo "  skip git not available — session-commit.sh integration tests skipped"
 fi

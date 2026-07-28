@@ -174,6 +174,21 @@ fi
 - **If `pm_tool_defined logs` is false:** skip with a note.
 - **Else:** record via the `logs` tool's configured provider an action entry like: `pm-end: wrapped '<name>' — journal logged, LAST-SESSION.md updated`.
 
+### Step 7b — Mark this session closed (stop advertising it to sibling panes)
+
+Other panes discover live work via `active-panes.sh`, which treats every marker with a live
+transcript as an open pane. Wrapping up must therefore say so explicitly, or this pane keeps
+appearing in every sibling's "other panes on this project now" until its transcript goes cold.
+
+**The marker file itself is deliberately left in place** — deleting it would break a later
+`/pm-status` in this same pane, and `/pm-end` is not always the last thing you do. Only the
+sidecar changes how *others* see this session; `/pm-start` clears it if you reopen.
+
+```bash
+mkdir -p "{{framework_root}}/sessions/.closed"
+date '+%Y-%m-%d %H:%M' > "{{framework_root}}/sessions/.closed/$SID"
+```
+
 ### Step 8 — Release the session color (optional)
 
 If `/pm-start` set a session color, print a paste-ready line to reset the prompt bar. The conversation name stays (set via `/rename`); only the color is cleared:

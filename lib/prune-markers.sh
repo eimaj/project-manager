@@ -75,6 +75,8 @@ del() {  # del <path> <reason>
   local f="$1" reason="$2"
   echo "DELETE  $(basename "$f")  ($reason)"
   if [ "$APPLY" -eq 1 ]; then
+    # Drop the /pm-end "closed" sidecar with its marker so .closed/ cannot outlive it.
+    rm -f "$DIR/.closed/$(basename "$f")" 2>/dev/null || true
     # Prefer `trash` (recoverable) interactively. PM_NO_TRASH=1 forces a plain rm for
     # non-interactive runs (CI, tests) where filling the user's Trash is not wanted.
     if [ -z "${PM_NO_TRASH:-}" ] && command -v trash >/dev/null 2>&1; then trash "$f"; else rm -f "$f"; fi
@@ -106,5 +108,18 @@ while IFS= read -r path; do
   kept=$((kept+1)); echo "KEEP    $base  ($root)"
 done < <(find "$DIR" -maxdepth 1 -type f -print 2>/dev/null | sort)
 
+# Orphan sidecars: a .closed/<sid> whose marker is already gone (pruned by an older run, or
+# deleted by hand). Harmless but unbounded, so reap them on the same pass.
+orphans=0
+if [ -d "$DIR/.closed" ]; then
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    [ -f "$DIR/$(basename "$c")" ] && continue
+    echo "DELETE  .closed/$(basename "$c")  (orphan — no marker)"
+    orphans=$((orphans+1))
+    [ "$APPLY" -eq 1 ] && rm -f "$c"
+  done < <(find "$DIR/.closed" -maxdepth 1 -type f -print 2>/dev/null | sort)
+fi
+
 echo
-echo "summary: kept=$kept  removed=$removed  ($([ "$APPLY" -eq 1 ] && echo applied || echo dry-run))"
+echo "summary: kept=$kept  removed=$removed  orphan-sidecars=$orphans  ($([ "$APPLY" -eq 1 ] && echo applied || echo dry-run))"

@@ -214,6 +214,27 @@ else
   exit "$rc"
 fi
 
+# ---- seed .gitattributes: union-merge LAST-SESSION.md -------------------------
+# LAST-SESSION.md carries one block per session, and /pm-end commits it on a PER-SESSION
+# branch. Two panes wrapping up on the same day therefore each append a different block at
+# EOF on different branches — and git's default 3-way merge reports that as a CONFLICT when
+# those branches are reconciled at EOD. (Verified: two per-session branches, one block each,
+# conflict on merge.) The handoff lock prevents lost updates WITHIN a working tree; it does
+# nothing across branches.
+#
+# `merge=union` is the right resolution for an append-only block file: git keeps BOTH sides
+# instead of conflicting, so every session's handoff survives reconciliation. Blocks are
+# keyed by session id and a session only ever commits on its own branch, so union can never
+# duplicate or interleave a single block.
+GITATTR_PATH="$PM_ROOT/.gitattributes"
+GITATTR_LINE="LAST-SESSION.md merge=union"
+if [[ -f "$GITATTR_PATH" ]] && grep -qF "$GITATTR_LINE" "$GITATTR_PATH"; then
+  echo "kept    $GITATTR_PATH (already union-merges LAST-SESSION.md)"
+else
+  printf '%s\n' "$GITATTR_LINE" >> "$GITATTR_PATH"
+  echo "wrote   $GITATTR_PATH ($GITATTR_LINE)"
+fi
+
 # ---- seed CONTEXT.md (never clobber) ------------------------------------------
 CONTEXT_PATH="$PM_ROOT/CONTEXT.md"
 if [[ -f "$CONTEXT_PATH" ]]; then

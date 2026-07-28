@@ -34,6 +34,12 @@ assert_contains()      { if [[ "$1" == *"$2"* ]]; then pass "$3"; else fail "$3"
 assert_file_contains() { if grep -qF -- "$2" "$1" 2>/dev/null; then pass "$3"; else fail "$3" "$1 lacks [$2]"; fi; }
 count_lines()          { local n; n="$(grep -c "$1" "$2" 2>/dev/null)"; echo "${n:-0}"; }  # count_lines <regex> <file>
 
+backdate() {  # backdate <file> <days-ago>   (BSD then GNU)
+  local ts
+  ts="$(date -v-"$2"d +%Y%m%d%H%M 2>/dev/null || date -d "$2 days ago" +%Y%m%d%H%M)"
+  touch -t "$ts" "$1"
+}
+
 sha() { shasum "$1" 2>/dev/null | awk '{print $1}' || cksum "$1" | awk '{print $1}'; }
 snapshot() { # snapshot <dir> -> "F path sha" / "L path -> target" lines, sorted
   ( cd "$1" && find . \( -type f -o -type l \) 2>/dev/null | sort | while read -r f; do
@@ -762,15 +768,135 @@ t_wl_meetings_dedupe() {
 t_wl_mutual_exclusion; t_wl_stale_break; t_wl_fail_loud; t_wl_meetings_dedupe
 
 # ── session-commit.sh per-session commit branch ───────────────────────────────────
+section "LAST-SESSION.md cross-branch merge"
+
+t_sc_gitattributes_seeded() {
+  local d="$WORK/sc_gitattr"; local fw="$d/fw"; mkdir -p "$fw" "$d/pa"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_file_contains "$d/pa/.gitattributes" "LAST-SESSION.md merge=union" \
+    "scaffold: seeds union-merge for LAST-SESSION.md"
+  PM_FRAMEWORK_ROOT="$fw" PM_NAME=A PM_ROOT="$d/pa" "$SC" >/dev/null 2>&1
+  assert_eq 1 "$(count_lines 'LAST-SESSION.md merge=union' "$d/pa/.gitattributes")" \
+    "scaffold: gitattributes seed is idempotent"
+}
+
+t_lastsession_union_merge() {
+  # THE regression: two panes each /pm-end on their OWN per-session branch, each appending
+  # their own block to LAST-SESSION.md. Under git's default merge that is a CONFLICT at EOD
+  # reconciliation — the handoff lock only prevents lost updates WITHIN one working tree.
+  # merge=union keeps both blocks instead.
+  local d="$WORK/ls_union"; local repo="$d/repo"; mkdir -p "$d"
+  git init -q "$repo"
+  git -C "$repo" config user.email t@e.com; git -C "$repo" config user.name T
+  git -C "$repo" config commit.gpgsign false
+  printf 'LAST-SESSION.md merge=union\n' > "$repo/.gitattributes"
+  printf '# P — Last Session\n' > "$repo/LAST-SESSION.md"
+  git -C "$repo" add -A; git -C "$repo" commit -q -m seed
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+
+  git -C "$repo" checkout -q -b pm-x
+  printf '\n<!-- PM:SESSION x START -->\nx handoff\n<!-- PM:SESSION x END -->\n' >> "$repo/LAST-SESSION.md"
+  git -C "$repo" commit -q -am "handoff x"
+  git -C "$repo" checkout -q "$base"; git -C "$repo" checkout -q -b pm-y
+  printf '\n<!-- PM:SESSION y START -->\ny handoff\n<!-- PM:SESSION y END -->\n' >> "$repo/LAST-SESSION.md"
+  git -C "$repo" commit -q -am "handoff y"
+
+  git -C "$repo" checkout -q pm-x
+  if git -C "$repo" merge --no-edit pm-y >/dev/null 2>&1; then
+    pass "LAST-SESSION: two per-session branches merge without conflict"
+  else
+    fail "LAST-SESSION: two per-session branches merge without conflict" \
+         "$(git -C "$repo" diff --name-only --diff-filter=U | tr '\n' ' ')"
+    git -C "$repo" merge --abort 2>/dev/null
+  fi
+  assert_file_contains "$repo/LAST-SESSION.md" "x handoff" "LAST-SESSION: session x block survives merge"
+  assert_file_contains "$repo/LAST-SESSION.md" "y handoff" "LAST-SESSION: session y block survives merge"
+}
+
+if command -v git >/dev/null 2>&1; then
+  t_sc_gitattributes_seeded; t_lastsession_union_merge
+else
+  echo "  skip git not available — LAST-SESSION merge tests skipped"
+fi
+
+section "active-panes.sh"
+
+AP="$REPO/lib/active-panes.sh"
+
+# ap_fixture <dir> — a sessions dir + transcript root; echoes nothing, exports paths by
+# convention: $1/sessions, $1/projects/slug.
+ap_fixture() { mkdir -p "$1/sessions" "$1/projects/slug"; }
+ap_pane() {  # ap_pane <dir> <sid> <root> [stale]
+  printf '%s\n' "$3" > "$1/sessions/$2"
+  : > "$1/projects/slug/$2.jsonl"
+  [[ "${4:-}" == "stale" ]] && backdate "$1/projects/slug/$2.jsonl" 2
+  return 0
+}
+ap_run() { PM_SESSIONS_DIR="$1/sessions" PM_CC_PROJECTS="$1/projects" "$AP" "${@:2}"; }
+
+t_ap_lists_siblings_on_same_root() {
+  local d="$WORK/ap_same"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-one "$r"; ap_pane "$d" sid-two "$r"
+  local out; out="$(ap_run "$d" --root "$r")"
+  assert_contains "$out" "sid-one" "active-panes: lists first sibling"
+  assert_contains "$out" "sid-two" "active-panes: lists second sibling"
+}
+
+t_ap_excludes_other_projects() {
+  local d="$WORK/ap_other"; ap_fixture "$d"
+  local r1="$d/p1" r2="$d/p2"; mkdir -p "$r1" "$r2"
+  ap_pane "$d" sid-here "$r1"; ap_pane "$d" sid-elsewhere "$r2"
+  local out; out="$(ap_run "$d" --root "$r1")"
+  assert_contains "$out" "sid-here" "active-panes: lists a pane on this root"
+  if [[ "$out" != *"sid-elsewhere"* ]]; then pass "active-panes: excludes panes on another root"
+  else fail "active-panes: excludes panes on another root" "$out"; fi
+}
+
+t_ap_excludes_closed() {
+  # /pm-end drops sessions/.closed/<sid>; the pane must vanish from sibling views but its
+  # MARKER must survive so a later /pm-status in that pane still resolves the project.
+  local d="$WORK/ap_closed"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-open "$r"; ap_pane "$d" sid-done "$r"
+  mkdir -p "$d/sessions/.closed"; : > "$d/sessions/.closed/sid-done"
+  local out; out="$(ap_run "$d" --root "$r")"
+  assert_contains "$out" "sid-open" "active-panes: open pane still listed"
+  if [[ "$out" != *"sid-done"* ]]; then pass "active-panes: closed pane hidden from siblings"
+  else fail "active-panes: closed pane hidden from siblings" "$out"; fi
+  assert_eq "$r" "$(head -1 "$d/sessions/sid-done")" "active-panes: closed pane keeps its marker"
+}
+
+t_ap_excludes_dead() {
+  # A crashed pane never runs /pm-end. Markers are immortal, so liveness must come from the
+  # transcript, not from the marker's existence.
+  local d="$WORK/ap_dead"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-alive "$r"; ap_pane "$d" sid-crashed "$r" stale
+  local out; out="$(ap_run "$d" --root "$r" --live-mins 60)"
+  assert_contains "$out" "sid-alive" "active-panes: live pane listed"
+  if [[ "$out" != *"sid-crashed"* ]]; then pass "active-panes: pane with a cold transcript excluded"
+  else fail "active-panes: pane with a cold transcript excluded" "$out"; fi
+}
+
+t_ap_no_transcript_excluded() {
+  local d="$WORK/ap_notx"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  printf '%s\n' "$r" > "$d/sessions/sid-notranscript"     # marker only, no transcript ever
+  local out; out="$(ap_run "$d" --root "$r")"
+  assert_eq "" "$out" "active-panes: marker without a transcript is not a live pane"
+}
+
+t_ap_json_shape() {
+  local d="$WORK/ap_json"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-json "$r"
+  local out; out="$(ap_run "$d" --root "$r" --json)"
+  assert_eq "sid-json" "$(printf '%s' "$out" | jq -r '.sid')" "active-panes: --json emits sid"
+  assert_eq "false"    "$(printf '%s' "$out" | jq -r '.self')" "active-panes: --json marks non-self panes"
+}
+
+t_ap_lists_siblings_on_same_root; t_ap_excludes_other_projects; t_ap_excludes_closed
+t_ap_excludes_dead; t_ap_no_transcript_excluded; t_ap_json_shape
+
 section "prune-markers.sh"
 
 PRUNE="$REPO/lib/prune-markers.sh"
-
-backdate() {  # backdate <file> <days-ago>   (BSD then GNU)
-  local ts
-  ts="$(date -v-"$2"d +%Y%m%d%H%M 2>/dev/null || date -d "$2 days ago" +%Y%m%d%H%M)"
-  touch -t "$ts" "$1"
-}
 
 t_prune_keeps_concurrent_same_root() {
   # THE regression: markers are per SESSION, not per project. Two panes legitimately hold
@@ -823,8 +949,22 @@ t_prune_dry_run_default() {
   assert_contains "$out" "DRY-RUN" "prune: dry-run is the default mode"
 }
 
+t_prune_reaps_sidecars() {
+  # A .closed/<sid> sidecar must die with its marker, and an orphan sidecar (marker already
+  # gone) must be reaped too — otherwise .closed/ grows without bound.
+  local d="$WORK/prune_sidecar"; local s="$d/sessions"; mkdir -p "$s/.closed"
+  echo /proj/X > "$s/oldsid"; backdate "$s/oldsid" 30
+  : > "$s/.closed/oldsid"                      # sidecar for a marker about to be pruned
+  : > "$s/.closed/ghostsid"                    # sidecar whose marker is already gone
+  PM_NO_TRASH=1 PM_CC_PROJECTS="$d/none" "$PRUNE" --dir "$s" --days 14 --apply >/dev/null 2>&1
+  assert_eq "no" "$([[ -e "$s/.closed/oldsid" ]] && echo yes || echo no)" \
+    "prune: sidecar removed with its marker"
+  assert_eq "no" "$([[ -e "$s/.closed/ghostsid" ]] && echo yes || echo no)" \
+    "prune: orphan sidecar reaped"
+}
+
 t_prune_keeps_concurrent_same_root; t_prune_age; t_prune_live_protected
-t_prune_stale_transcript_not_protected; t_prune_dry_run_default
+t_prune_stale_transcript_not_protected; t_prune_dry_run_default; t_prune_reaps_sidecars
 
 section "session-commit.sh"
 

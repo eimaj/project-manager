@@ -22,7 +22,7 @@ time, adjust the `tool:<name>` references below to match.
 
 **Use when:** opening a project for a work session — "start on <project>", "pick up where I left off", "/pm-start @path/to/root". Run once at session open.
 **Do NOT use when:** you just want a rerunnable read-only briefing with no live network sync → use `/pm-status`. Or wrapping up → use `/pm-end`.
-**Inputs expected:** `@<path>` to the project root on first run in a session (sets the marker). Subsequent commands in the same session read the marker. Optional `--full` (alias `--force`) anywhere in the args forces a complete live re-sync even if one already ran today.
+**Inputs expected:** `@<path>` to the project root on first run in a session (sets the marker). Subsequent commands in the same session read the marker. **`@<path>` is optional** — with no marker and no path, pm-start resolves the project from the current directory, else from the single project open in another live pane, and asks when that is ambiguous. Optional `--full` (alias `--force`) anywhere in the args forces a complete live re-sync even if one already ran today.
 **Same-day re-run:** if a COMPLETE run already happened today for this project (per-project stamp `<root>/.pm/.last-start`), pm-start skips the repeating LIVE sync and just re-briefs from cache (like `/pm-status`), reporting how old the data is (`synced 5h 04m ago`) — pass `--full` to override. On this path the companion `live-sync.md` is never opened.
 **Outputs produced:** session marker `{{framework_root}}/sessions/<session-id>`; new meeting pointers appended to `<root>/meetings.jsonl`; regenerated `<root>/CALENDAR.md`; a printed briefing; a same-day daily stamp `<root>/.pm/.last-start` (COMPLETE runs only); and a paste-ready `/rename` + `/color` block.
 
@@ -88,6 +88,40 @@ fi
 MARKER="{{framework_root}}/sessions/$SID"
 # If the user passed @<path> (parsed into $ARG_PATH above), that is the root. Else read the marker:
 ROOT="${ARG_PATH:-$(cat "$MARKER" 2>/dev/null)}"
+
+# --- Discovery: no @path given AND no marker for this session ------------------------
+# A second pane opening a project another pane already has open should not have to retype
+# the path. Resolve it, in order: (1) cwd sits inside a registered project, (2) exactly one
+# project is open in a LIVE pane. Ambiguity is never guessed — it is listed and asked.
+if [[ -z "$ROOT" ]]; then
+  REG="{{framework_root}}/registry.jsonl"
+  # (1) cwd — the DEEPEST registered root that is $PWD or an ancestor of it (nested projects).
+  ROOT="$(jq -r '.root // empty' "$REG" 2>/dev/null | while IFS= read -r r; do
+            [[ -n "$r" && ( "$PWD" == "$r" || "$PWD" == "$r"/* ) ]] && printf '%s\t%s\n' "${#r}" "$r"
+          done | sort -rn | head -1 | cut -f2)"
+  if [[ -n "$ROOT" ]]; then
+    echo "pm: no @path given — resolved '$ROOT' from the current directory."
+  else
+    # (2) sibling panes. A marker alone proves nothing (they are immortal until pruned), so
+    # require a LIVE session: a Claude Code transcript for that sid touched in the last 24h.
+    SESS="{{framework_root}}/sessions"; CCP="${PM_CC_PROJECTS:-$HOME/.claude/projects}"
+    LIVE_ROOTS="$(find "$SESS" -maxdepth 1 -type f -print 2>/dev/null | while IFS= read -r m; do
+        sid="$(basename "$m")"
+        [[ -n "$(find "$CCP" -maxdepth 2 -name "$sid.jsonl" -mmin -1440 -print -quit 2>/dev/null)" ]] \
+          && cat "$m" 2>/dev/null
+      done | sed '/^$/d' | sort -u)"
+    N="$(printf '%s' "$LIVE_ROOTS" | grep -c . || true)"
+    if [[ "$N" -eq 1 ]]; then
+      ROOT="$LIVE_ROOTS"
+      echo "pm: no @path given — opening '$ROOT' (already open in another live pane)."
+    elif [[ "$N" -gt 1 ]]; then
+      echo "pm: $N projects are open in other panes — name the one you want:"
+      printf '%s\n' "$LIVE_ROOTS" | sed 's#^#  /pm-start @#'
+      exit 1
+    fi
+  fi
+fi
+
 # ABSOLUTIZE before validating or writing. A relative `@logs/Foo` validates fine here —
 # cwd happens to be right at this moment — but it lands in the marker verbatim, and every
 # later /pm-status / /pm-end runs from a different cwd and cannot resolve it. A marker must
@@ -258,6 +292,7 @@ fi
 - **This is the LIVE-sync entry point.** `/pm-status` is cache-only; do not duplicate live sync there.
 - **Same-day re-run skips the repeating LIVE sync.** Detection is per-project via `<root>/.pm/.last-start` (stored date == `date +%F` today), independent of session id. When already-ran-today, print the one-line notice, skip Steps 2/3/3b/4 and the Step 5 LIVE pulls, and re-brief from cache (mirroring `/pm-status`); still run Step 1 (marker), the Step 5 LOCAL reads, and Steps 6–8. `--full` (alias `--force`) anywhere in the args forces the COMPLETE flow. **Only a COMPLETE run writes/updates the stamp** — a skipped re-brief must not overwrite the date-of-last-full-sync.
 - **Session id: prefer the harness UUID, mint only as a fallback.** When `session.sh` returns a real UUID (from `CLAUDE_CODE_SESSION_ID` etc.), use it verbatim — never mint. Only when it returns a WEAK id (`tty-…`/`shell-…`) does pm-start mint a UUID and persist it to `{{framework_root}}/sessions/.mint/<anchor>`; this is the ONLY skill that writes the mint file. `session.sh` (used by `/pm-status` and `/pm-end`) only ever READS it, so all three resolve the same id.
+- **Discovery never guesses.** With no `@path` and no marker, resolve from cwd, then from projects open in LIVE panes (a marker alone is not evidence — markers outlive their sessions). Exactly one candidate ⇒ use it and say where it came from. More than one ⇒ list them and stop; do not pick.
 - **The marker always holds an ABSOLUTE project root.** Absolutize `$ARG_PATH` before validating or writing it. A relative `@path` passes the validation check (cwd is right *now*) but every later `/pm-status` and `/pm-end` runs from a different cwd and cannot resolve it.
 - **Meeting catch-up runs inline** — never delegate the meeting fetch to a subagent (MCP can fail silently there).
 - **Every tool is guarded by `pm_tool_defined <name>`** — when a tool is undefined, skip its sync and print "tool:<name> not defined — skipping <capability>" (naming the tool's manual skill where useful). Never fabricate data for an undefined tool.

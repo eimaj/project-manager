@@ -22,11 +22,36 @@
 #     concurrent tab checked out on this tab's pm branch. A detached HEAD restores to
 #     its short SHA.
 #
+# Concurrency: per-session BRANCHES removed the cross-tab *ref* race, but not the
+# cross-tab *working-tree* race. checkout -> add -> commit -> restore mutates HEAD and
+# the index, both shared by every pane in the tree. Two concurrent /pm-end runs interleave
+# like this:
+#
+#   A: ORIG=main;        checkout BRANCH_A
+#   B: ORIG=BRANCH_A  <- B captures A's branch as its "original"
+#   B: checkout BRANCH_B
+#   A: add + commit   <- lands on BRANCH_B, not BRANCH_A
+#   A: checkout main
+#   B: add + commit   <- lands on main
+#
+# So the tree-mutating half runs under a REPO-scoped lock (_sc_tree_critical). The lock is
+# per-repo, NOT per-project: two panes on DIFFERENT projects in the same repo still share
+# one tree and one HEAD. It is keyed on the git dir, so a linked worktree — which has its
+# own tree and HEAD — locks independently and does not serialize against the main tree.
+#
 # Tool-agnostic: this helper only runs git in the project's repo. It names no meeting
 # source, tracker, or logger — those live behind capability slots resolved elsewhere.
 #
 # Safe to source: it defines session_shortsid + session_commit and only auto-runs when
 # EXECUTED directly (so tests can source and assert on the pure sanitizer).
+
+# The tree lock must outlive a commit whose hooks run long (commit-msg linters, formatters).
+# with-lock.sh's 30s default would let a second pane break a LIVE lock mid-commit — exactly
+# the failure the lock exists to prevent — so raise the stale threshold before sourcing it.
+# A caller-supplied PM_LOCK_STALE_AFTER still wins.
+: "${PM_LOCK_STALE_AFTER:=300}"
+# shellcheck source=with-lock.sh
+. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/with-lock.sh"
 
 # session_shortsid <sid> -> ref-safe short suffix: [a-z0-9-], collapsed, trimmed, <=12
 # chars. Handles SIDs with '/', spaces, or the tty-.../shell-$PPID fallbacks. Falls back
@@ -46,20 +71,15 @@ session_shortsid() {
   printf '%s' "$short"
 }
 
-# session_commit <root> <sid> <name> — commit <root>/ on this session's own branch.
-session_commit() {
-  local ROOT="$1" SID="$2" NAME="$3"
-  local REPO REL DAY SLUG SHORT BRANCH ORIG_BRANCH
-  REPO=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null) || REPO=""
-  if [[ -z "$REPO" ]]; then
-    echo "session-commit.sh: not a git repo — skipping commit" >&2
-    return 0
-  fi
-  REL="${ROOT#"$REPO"/}"
-  DAY=$(date +%Y-%m-%d)
-  SLUG=$(printf '%s' "$NAME" | tr '[:upper:] ' '[:lower:]-')
-  SHORT=$(session_shortsid "$SID")
-  BRANCH="chore/$DAY-$SLUG-pm-$SHORT"      # per-SESSION branch — no cross-tab ref race
+# _sc_tree_critical — the tree-mutating half of session_commit, run UNDER the repo tree
+# lock. Reads REPO / REL / BRANCH / ORIG_BRANCH from session_commit's frame via bash
+# dynamic scoping (the same pattern handoff-write.sh's write_handoff_block uses).
+#
+# Every git call that moves HEAD or writes the index is checked: on failure we abort and
+# leave the tree alone rather than staging the project folder onto whatever branch happens
+# to be checked out. Silently continuing past a lost checkout is what turns a race into a
+# wrong-branch commit.
+_sc_tree_critical() {
   # Record the current branch so we can restore it (the working tree is shared!).
   ORIG_BRANCH=$(git -C "$REPO" symbolic-ref --quiet --short HEAD 2>/dev/null \
     || git -C "$REPO" rev-parse --short HEAD 2>/dev/null)
@@ -72,25 +92,64 @@ session_commit() {
   local -a UNTRACKED=()
   while IFS= read -r -d '' f; do UNTRACKED+=("$f"); done \
     < <(git -C "$REPO" ls-files --others --exclude-standard -z -- "$REL/" 2>/dev/null)
+
+  local co_rc=0
   if git -C "$REPO" rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
-    git -C "$REPO" checkout "$BRANCH" >/dev/null 2>&1
+    git -C "$REPO" checkout "$BRANCH" >/dev/null 2>&1 || co_rc=$?
   else
-    git -C "$REPO" checkout -b "$BRANCH" >/dev/null 2>&1
+    git -C "$REPO" checkout -b "$BRANCH" >/dev/null 2>&1 || co_rc=$?
   fi
-  git -C "$REPO" add "$REL/"               # only the project folder — nothing outside $REL/
+  if (( co_rc != 0 )); then
+    echo "session-commit.sh: could not switch to $BRANCH (rc=$co_rc) — aborting, nothing committed." >&2
+    return 1
+  fi
+
+  if ! git -C "$REPO" add "$REL/"; then     # only the project folder — nothing outside $REL/
+    echo "session-commit.sh: 'git add $REL/' failed — restoring $ORIG_BRANCH, nothing committed." >&2
+    [[ -n "$ORIG_BRANCH" ]] && git -C "$REPO" checkout "$ORIG_BRANCH" >/dev/null 2>&1
+    return 1
+  fi
   local committed=0
   if ! git -C "$REPO" diff --cached --quiet -- "$REL/"; then
     git -C "$REPO" commit -m "docs(pm): $SLUG session $DAY" >/dev/null   # <=50 chars
     committed=1
   fi
   # Restore the branch the user was on so the shared tree isn't left on the pm branch.
-  [[ -n "$ORIG_BRANCH" ]] && git -C "$REPO" checkout "$ORIG_BRANCH" >/dev/null 2>&1 || true
+  if [[ -n "$ORIG_BRANCH" ]] && ! git -C "$REPO" checkout "$ORIG_BRANCH" >/dev/null 2>&1; then
+    echo "session-commit.sh: WARNING — could not restore '$ORIG_BRANCH'; tree left on $BRANCH." >&2
+  fi
   # Re-materialize the files base does not track (the restore above deleted them), keeping
   # them UNTRACKED in the working tree: the snapshot lives on $BRANCH, the tree is unchanged.
+  # Non-fatal (the snapshot is safely committed either way) but never silent: a failure here
+  # means the project folder is missing from the tree and the user must know.
   if [[ "$committed" == 1 && ${#UNTRACKED[@]} -gt 0 ]]; then
-    git -C "$REPO" checkout "$BRANCH" -- "${UNTRACKED[@]}" >/dev/null 2>&1 || true
+    if ! git -C "$REPO" checkout "$BRANCH" -- "${UNTRACKED[@]}" >/dev/null 2>&1; then
+      echo "session-commit.sh: WARNING — could not restore ${#UNTRACKED[@]} untracked file(s) under $REL/; recover them from $BRANCH." >&2
+    fi
     git -C "$REPO" reset -q -- "$REL/" >/dev/null 2>&1 || true
   fi
+  return 0
+}
+
+# session_commit <root> <sid> <name> — commit <root>/ on this session's own branch.
+session_commit() {
+  local ROOT="$1" SID="$2" NAME="$3"
+  local REPO REL DAY SLUG SHORT BRANCH ORIG_BRANCH GITDIR
+  REPO=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null) || REPO=""
+  if [[ -z "$REPO" ]]; then
+    echo "session-commit.sh: not a git repo — skipping commit" >&2
+    return 0
+  fi
+  REL="${ROOT#"$REPO"/}"
+  DAY=$(date +%Y-%m-%d)
+  SLUG=$(printf '%s' "$NAME" | tr '[:upper:] ' '[:lower:]-')
+  SHORT=$(session_shortsid "$SID")
+  BRANCH="chore/$DAY-$SLUG-pm-$SHORT"      # per-SESSION branch — no cross-tab ref race
+  # Serialize the tree-mutating half (see the concurrency note in the header). Key the lock
+  # on the git dir so a linked worktree locks independently — .git is a FILE in a worktree,
+  # so $REPO/.git is not a mkdir-able lock parent there.
+  GITDIR=$(git -C "$REPO" rev-parse --absolute-git-dir 2>/dev/null) || GITDIR="$REPO/.git"
+  with_lock "$GITDIR/.pm-tree.lock" _sc_tree_critical || return 1
   printf '%s\n' "$BRANCH"                   # emit the branch used (for callers / tests)
 }
 

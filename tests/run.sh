@@ -855,9 +855,74 @@ t_scm_untracked_folder_preserved() {
     "untracked folder: file stays untracked on base (not silently added)"
 }
 
+t_scm_lock_held_fails_loud() {
+  # A held tree lock must make session_commit FAIL LOUD and leave the tree untouched,
+  # rather than proceed unlocked and stage the project onto whatever branch is checked out.
+  local d="$WORK/scm_lock_held"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  echo change > "$repo/pa/new.txt"
+  local gitdir; gitdir="$(git -C "$repo" rev-parse --absolute-git-dir)"
+  mkdir "$gitdir/.pm-tree.lock"                      # simulate a concurrent pane holding it
+  local out rc=0
+  # High stale threshold so the held lock is not broken as stale — we are testing contention.
+  out="$(PM_LOCK_STALE_AFTER=9999 "$SCM" --root "$repo/pa" --session "sid-BLOCKED" --name "PA" 2>&1)" || rc=$?
+  rmdir "$gitdir/.pm-tree.lock"
+  if [[ "$rc" -ne 0 ]]; then pass "lock held: session_commit fails loud"
+  else fail "lock held: session_commit fails loud" "rc=0 out=[$out]"; fi
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "lock held: HEAD unchanged"
+  assert_eq "" "$(git -C "$repo" branch --list 'chore/*-pm-*' | tr -d ' *')" \
+    "lock held: no session branch created"
+}
+
+t_scm_lock_released() {
+  # The lock is released as soon as the critical section returns, so the next run proceeds.
+  local d="$WORK/scm_lock_rel"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  echo change > "$repo/pa/new.txt"
+  "$SCM" --root "$repo/pa" --session "sid-REL" --name "PA" >/dev/null 2>&1
+  local gitdir; gitdir="$(git -C "$repo" rev-parse --absolute-git-dir)"
+  if [[ ! -d "$gitdir/.pm-tree.lock" ]]; then pass "tree lock released after a normal run"
+  else fail "tree lock released after a normal run" "$gitdir/.pm-tree.lock still present"; fi
+}
+
+t_scm_concurrent_no_crosstalk() {
+  # THE regression this lock exists for: two concurrent /pm-end runs in ONE shared tree —
+  # on two DIFFERENT projects — must each land their own snapshot on their OWN branch.
+  # Unlocked, they interleave checkout/add/commit/restore and commit onto each other's
+  # branches (or onto base). This is why the lock is repo-scoped, not project-scoped.
+  local d="$WORK/scm_concurrent"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  mkdir -p "$repo/pb/.pm"; echo seedb > "$repo/pb/seed.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -q -m "chore: seed b"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  echo a-change > "$repo/pa/a.txt"
+  echo b-change > "$repo/pb/b.txt"
+  "$SCM" --root "$repo/pa" --session "sid-AAAA" --name "PA" >/dev/null 2>&1 &
+  local p1=$!
+  "$SCM" --root "$repo/pb" --session "sid-BBBB" --name "PB" >/dev/null 2>&1 &
+  local p2=$!
+  wait "$p1"; wait "$p2"
+  local ba bb
+  ba="$(git -C "$repo" branch --list '*-pa-pm-sid-aaaa' | tr -d ' *')"
+  bb="$(git -C "$repo" branch --list '*-pb-pm-sid-bbbb' | tr -d ' *')"
+  assert_eq "yes" "$([[ -n "$ba" && -n "$bb" ]] && echo yes || echo no)" \
+    "concurrent: both session branches created"
+  assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$ba" 2>/dev/null)" \
+    "concurrent: branch A has exactly one commit"
+  assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$bb" 2>/dev/null)" \
+    "concurrent: branch B has exactly one commit"
+  assert_eq "pa/a.txt" "$(git -C "$repo" show --name-only --format= "$ba" 2>/dev/null | sed '/^$/d')" \
+    "concurrent: branch A committed only its own project"
+  assert_eq "pb/b.txt" "$(git -C "$repo" show --name-only --format= "$bb" 2>/dev/null | sed '/^$/d')" \
+    "concurrent: branch B committed only its own project"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "concurrent: base branch restored"
+}
+
 if command -v git >/dev/null 2>&1; then
   t_scm_shortsid; t_scm_distinct_branches; t_scm_weird_sid_valid_ref; t_scm_no_empty_commit
   t_scm_untracked_folder_preserved
+  t_scm_lock_held_fails_loud; t_scm_lock_released; t_scm_concurrent_no_crosstalk
 else
   echo "  skip git not available — session-commit.sh integration tests skipped"
 fi

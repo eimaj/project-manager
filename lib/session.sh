@@ -3,9 +3,18 @@
 #
 # Claude Code exports CLAUDE_CODE_SESSION_ID (a stable per-session UUID); prefer it. The
 # older CLAUDE_SESSION_ID is kept as a secondary but is frequently unset, so fall back
-# through a chain of increasingly-weak anchors. Absent any session env var, continuity
-# relies on a stable *controlling terminal*: each Bash-tool command spawns a fresh parent
-# shell, so $PPID is unstable, but the tty is constant for the session — prefer it.
+# through a chain of increasingly-weak anchors.
+#
+# On the anchors, MEASURED rather than assumed (2026-07-28, Claude Code 2.1.220 in herdr):
+#   - $PPID is the long-lived `claude` process itself ($PPID == $CLAUDE_PID), so it is
+#     STABLE for the whole session — not per-Bash-call as an earlier version of this
+#     comment claimed.
+#   - `ps -o tty= -p $$` returns "??": Bash-tool commands run with NO controlling terminal,
+#     so the tty branch never fires on this harness. It is kept only for shells that do
+#     have one (a human running these helpers from a real terminal).
+# The tty branch is therefore effectively dead under Claude Code and ppid- is what
+# pm_session_anchor actually returns. Do not build on the tty form without re-measuring.
+#
 # Resolution order: CLAUDE_CODE_SESSION_ID → CLAUDE_SESSION_ID → PM_SESSION_PID → TERM_SESSION_ID → minted-id → tty → shell-$PPID.
 # Echoes exactly one id on stdout. Used by pm-start (write the marker), pm-status / pm-end
 # (read it) so all three agree on which project is active in this session.

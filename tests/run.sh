@@ -762,6 +762,70 @@ t_wl_meetings_dedupe() {
 t_wl_mutual_exclusion; t_wl_stale_break; t_wl_fail_loud; t_wl_meetings_dedupe
 
 # ── session-commit.sh per-session commit branch ───────────────────────────────────
+section "prune-markers.sh"
+
+PRUNE="$REPO/lib/prune-markers.sh"
+
+backdate() {  # backdate <file> <days-ago>   (BSD then GNU)
+  local ts
+  ts="$(date -v-"$2"d +%Y%m%d%H%M 2>/dev/null || date -d "$2 days ago" +%Y%m%d%H%M)"
+  touch -t "$ts" "$1"
+}
+
+t_prune_keeps_concurrent_same_root() {
+  # THE regression: markers are per SESSION, not per project. Two panes legitimately hold
+  # their own marker for the SAME project; the old dedupe-by-root pass deleted the "extra"
+  # one and broke that pane's /pm-status and /pm-end.
+  local d="$WORK/prune_same_root"; local s="$d/sessions"; mkdir -p "$s"
+  echo /proj/X > "$s/aaaa"; echo /proj/X > "$s/bbbb"
+  local out
+  out="$(PM_NO_TRASH=1 PM_CC_PROJECTS="$d/none" "$PRUNE" --dir "$s" --apply 2>&1)"
+  assert_eq "yes" "$([[ -f "$s/aaaa" && -f "$s/bbbb" ]] && echo yes || echo no)" \
+    "prune: two recent markers on one root both survive (no dedupe)"
+  assert_contains "$out" "removed=0" "prune: nothing removed for recent same-root markers"
+}
+
+t_prune_age() {
+  local d="$WORK/prune_age"; local s="$d/sessions"; mkdir -p "$s"
+  echo /proj/X > "$s/oldsid"; echo /proj/X > "$s/newsid"
+  backdate "$s/oldsid" 30
+  PM_NO_TRASH=1 PM_CC_PROJECTS="$d/none" "$PRUNE" --dir "$s" --days 14 --apply >/dev/null 2>&1
+  assert_eq "no"  "$([[ -f "$s/oldsid" ]] && echo yes || echo no)" "prune: marker past retention removed"
+  assert_eq "yes" "$([[ -f "$s/newsid" ]] && echo yes || echo no)" "prune: recent marker kept"
+}
+
+t_prune_live_protected() {
+  # An OLD marker whose session is still live must survive — e.g. a pane open for weeks.
+  local d="$WORK/prune_live"; local s="$d/sessions"; local p="$d/projects/slug"; mkdir -p "$s" "$p"
+  echo /proj/X > "$s/livesid"; backdate "$s/livesid" 30
+  : > "$p/livesid.jsonl"                       # fresh transcript == live session
+  PM_NO_TRASH=1 PM_CC_PROJECTS="$d/projects" "$PRUNE" --dir "$s" --days 14 --apply >/dev/null 2>&1
+  assert_eq "yes" "$([[ -f "$s/livesid" ]] && echo yes || echo no)" \
+    "prune: old marker with a live transcript is protected"
+}
+
+t_prune_stale_transcript_not_protected() {
+  # A transcript that has not been touched inside the live window does NOT protect.
+  local d="$WORK/prune_stale"; local s="$d/sessions"; local p="$d/projects/slug"; mkdir -p "$s" "$p"
+  echo /proj/X > "$s/deadsid"; backdate "$s/deadsid" 30
+  : > "$p/deadsid.jsonl"; backdate "$p/deadsid.jsonl" 30
+  PM_NO_TRASH=1 PM_CC_PROJECTS="$d/projects" "$PRUNE" --dir "$s" --days 14 --apply >/dev/null 2>&1
+  assert_eq "no" "$([[ -f "$s/deadsid" ]] && echo yes || echo no)" \
+    "prune: old marker with a stale transcript is removed"
+}
+
+t_prune_dry_run_default() {
+  local d="$WORK/prune_dry"; local s="$d/sessions"; mkdir -p "$s"
+  echo /proj/X > "$s/oldsid"; backdate "$s/oldsid" 30
+  local out
+  out="$(PM_NO_TRASH=1 PM_CC_PROJECTS="$d/none" "$PRUNE" --dir "$s" 2>&1)"
+  assert_eq "yes" "$([[ -f "$s/oldsid" ]] && echo yes || echo no)" "prune: dry-run deletes nothing"
+  assert_contains "$out" "DRY-RUN" "prune: dry-run is the default mode"
+}
+
+t_prune_keeps_concurrent_same_root; t_prune_age; t_prune_live_protected
+t_prune_stale_transcript_not_protected; t_prune_dry_run_default
+
 section "session-commit.sh"
 
 SCM="$REPO/lib/session-commit.sh"

@@ -88,6 +88,13 @@ fi
 MARKER="{{framework_root}}/sessions/$SID"
 # If the user passed @<path> (parsed into $ARG_PATH above), that is the root. Else read the marker:
 ROOT="${ARG_PATH:-$(cat "$MARKER" 2>/dev/null)}"
+# ABSOLUTIZE before validating or writing. A relative `@logs/Foo` validates fine here —
+# cwd happens to be right at this moment — but it lands in the marker verbatim, and every
+# later /pm-status / /pm-end runs from a different cwd and cannot resolve it. A marker must
+# always hold an absolute path.
+if [[ -n "$ROOT" && "$ROOT" != /* ]]; then
+  ROOT="$(cd -P "$ROOT" 2>/dev/null && pwd)" || ROOT=""
+fi
 test -f "$ROOT/.pm/config.json" || { echo "Not a PM project (run /pm-init): $ROOT"; exit 1; }
 mkdir -p "{{framework_root}}/sessions"
 printf '%s\n' "$ROOT" > "$MARKER"
@@ -100,16 +107,33 @@ Load config into shell vars for later steps:
 ```bash
 # Per-project tool refs — how THIS project is identified inside each tool's backend.
 # A blank ref => that tool falls back to keyword matching against $KEYWORDS.
-MEETINGS_SCOPE=$(jq -r '.tool_refs.meetings // ""' "$ROOT/.pm/config.json")  # e.g. a meetings-provider folder
-CALENDAR_SCOPE=$(jq -r '.tool_refs.calendar // ""' "$ROOT/.pm/config.json")  # e.g. calendar/category filter
-EMAIL_SCOPE=$(jq -r '.tool_refs.email    // ""' "$ROOT/.pm/config.json")     # e.g. an email label/folder
-TASKS_SCOPE=$(jq -r '.tool_refs.tasks    // ""' "$ROOT/.pm/config.json")     # e.g. a tracker project
-GITHUB_SCOPE=$(jq -r '.tool_refs.github  // ""' "$ROOT/.pm/config.json")     # e.g. owner/repo
-TODO_SCOPE=$(jq -r '.tool_refs.todo      // ""' "$ROOT/.pm/config.json")     # e.g. a todo tag/list
-KEYWORDS=$(jq -r '.keywords | join(" ")' "$ROOT/.pm/config.json")
-NAME=$(jq -r '.name // ""' "$ROOT/.pm/config.json")
-SESSION_COLOR=$(jq -r '.session_color // ""' "$ROOT/.pm/config.json")
-COLLABORATORS=$(jq -c '.collaborators // []' "$ROOT/.pm/config.json")   # roster for the Step 6 quick-reference
+#
+# ONE jq pass, not nine: fields are emitted in a fixed order, one per line, and read back
+# positionally (a blank field is an empty line). Keep the emit order and the read order in
+# lockstep when adding a field. Assumes no config value contains a newline.
+{
+  IFS= read -r MEETINGS_SCOPE   # e.g. a meetings-provider folder
+  IFS= read -r CALENDAR_SCOPE   # e.g. calendar/category filter
+  IFS= read -r EMAIL_SCOPE      # e.g. an email label/folder
+  IFS= read -r TASKS_SCOPE      # e.g. a tracker project
+  IFS= read -r GITHUB_SCOPE     # e.g. owner/repo
+  IFS= read -r TODO_SCOPE       # e.g. a todo tag/list
+  IFS= read -r KEYWORDS
+  IFS= read -r NAME
+  IFS= read -r SESSION_COLOR
+  IFS= read -r COLLABORATORS    # roster for the Step 6 quick-reference (compact JSON)
+} < <(jq -r '
+  .tool_refs.meetings // "",
+  .tool_refs.calendar // "",
+  .tool_refs.email    // "",
+  .tool_refs.tasks    // "",
+  .tool_refs.github   // "",
+  .tool_refs.todo     // "",
+  ((.keywords      // []) | join(" ")),
+  .name          // "",
+  .session_color // "",
+  ((.collaborators // []) | tojson)
+' "$ROOT/.pm/config.json")
 ```
 
 Decide whether the repeating LIVE sync runs, or this is a same-day re-brief. Detection is **per-project** (keyed by `$ROOT`), independent of session id — multiple sessions in a day share one stamp:
@@ -267,6 +291,7 @@ fi
 - **This is the LIVE-sync entry point.** `/pm-status` is cache-only; do not duplicate live sync there.
 - **Same-day re-run skips the repeating LIVE sync.** Detection is per-project via `<root>/.pm/.last-start` (stored date == `date +%F` today), independent of session id. When already-ran-today, print the one-line notice, skip Steps 2/3/3b/4 and the Step 5 LIVE pulls, and re-brief from cache (mirroring `/pm-status`); still run Step 1 (marker), the Step 5 LOCAL reads, and Steps 6–8. `--full` (alias `--force`) anywhere in the args forces the COMPLETE flow. **Only a COMPLETE run writes/updates the stamp** — a skipped re-brief must not overwrite the date-of-last-full-sync.
 - **Session id: prefer the harness UUID, mint only as a fallback.** When `session.sh` returns a real UUID (from `CLAUDE_CODE_SESSION_ID` etc.), use it verbatim — never mint. Only when it returns a WEAK id (`tty-…`/`shell-…`) does pm-start mint a UUID and persist it to `{{framework_root}}/sessions/.mint/<anchor>`; this is the ONLY skill that writes the mint file. `session.sh` (used by `/pm-status` and `/pm-end`) only ever READS it, so all three resolve the same id.
+- **The marker always holds an ABSOLUTE project root.** Absolutize `$ARG_PATH` before validating or writing it. A relative `@path` passes the validation check (cwd is right *now*) but every later `/pm-status` and `/pm-end` runs from a different cwd and cannot resolve it.
 - **Meeting catch-up runs inline** — never delegate the meeting fetch to a subagent (MCP can fail silently there).
 - **Every tool is guarded by `pm_tool_defined <name>`** — when a tool is undefined, skip its sync and print "tool:<name> not defined — skipping <capability>" (naming the tool's manual skill where useful). Never fabricate data for an undefined tool.
 - **CALENDAR regeneration preserves manual entries** below the `<!-- PM:MANUAL -->` marker. Never drop them.

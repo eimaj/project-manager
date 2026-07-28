@@ -189,11 +189,14 @@ mkdir -p "$NOTES_ROOT"
 
 ### Step 7 — Install the framework lib + runtime state
 
-Copy the FULL lib set — including `with-lock.sh` (locking) and `session-commit.sh` (auto-commit) — so the rendered skills have every helper they source.
+Copy the FULL lib set — including `with-lock.sh` (locking), `session-commit.sh` (auto-commit),
+`prune-markers.sh` (marker reclamation), and the two `herdr-*` navigators — so the rendered
+skills have every helper they source and the maintenance tools ship with the framework.
 
 ```bash
 mkdir -p "$FRAMEWORK_ROOT/lib" "$FRAMEWORK_ROOT/sessions"
-for f in session.sh with-lock.sh scaffold.sh handoff-write.sh config.sh session-commit.sh; do
+for f in session.sh with-lock.sh scaffold.sh handoff-write.sh config.sh session-commit.sh \
+         prune-markers.sh herdr-tabs.sh herdr-goto.sh; do
   install -m 0755 "$REPO/lib/$f" "$FRAMEWORK_ROOT/lib/$f"
 done
 [[ -f "$FRAMEWORK_ROOT/registry.jsonl" ]] || : > "$FRAMEWORK_ROOT/registry.jsonl"

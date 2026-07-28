@@ -222,8 +222,9 @@ render_skill() {
   # Template override convention: the committed templates/$skill/SKILL.md is the
   # PUBLIC, tool-agnostic default. If a gitignored templates/$skill/SKILL.local.md
   # exists (your own concrete override, like settings.local.json), render THAT instead.
-  local src="$REPO/templates/$skill/SKILL.md"
-  [[ -f "$REPO/templates/$skill/SKILL.local.md" ]] && src="$REPO/templates/$skill/SKILL.local.md"
+  local tdir="$REPO/templates/$skill"
+  local src="$tdir/SKILL.md"
+  [[ -f "$tdir/SKILL.local.md" ]] && src="$tdir/SKILL.local.md"
   local dst_dir="$SKILLS_DIR/$skill"
   local dst="$dst_dir/SKILL.md"
 
@@ -243,11 +244,31 @@ render_skill() {
   # a literal '#' would end the command early and a literal '&' would expand to the
   # matched text, so backslash-escape '\', '&', and '#' before substituting.
   esc() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
-  sed \
-    -e "s#{{framework_root}}#$(esc "${FRAMEWORK_ROOT}")#g" \
-    -e "s#{{notes_root}}#$(esc "${NOTES_ROOT}")#g" \
-    "$src" > "$dst"
+  subst() {  # subst <src> <dst> — the 2-placeholder render, shared by SKILL.md + companions
+    sed \
+      -e "s#{{framework_root}}#$(esc "${FRAMEWORK_ROOT}")#g" \
+      -e "s#{{notes_root}}#$(esc "${NOTES_ROOT}")#g" \
+      "$1" > "$2"
+  }
+  subst "$src" "$dst"
   echo "rendered $dst"
+
+  # COMPANION DOCS. A template dir MAY carry sibling .md files that SKILL.md defers to and
+  # the model reads only when it needs them (progressive disclosure — e.g. pm-start's
+  # live-sync.md, which a same-day re-brief never opens). Render each with the SAME
+  # substitution, honouring the same <name>.local.md override convention as SKILL.md.
+  # Without this loop a companion would simply never reach ~/.claude/skills and the
+  # SKILL.md reference would dangle.
+  local f base osrc
+  for f in "$tdir"/*.md; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    case "$base" in SKILL.md|*.local.md) continue ;; esac
+    osrc="$f"
+    [[ -f "$tdir/${base%.md}.local.md" ]] && osrc="$tdir/${base%.md}.local.md"
+    subst "$osrc" "$dst_dir/$base"
+    echo "rendered $dst_dir/$base"
+  done
 }
 
 for s in pm-init pm-start pm-status pm-end; do

@@ -23,7 +23,7 @@ time, adjust the `tool:<name>` references below to match.
 **Use when:** opening a project for a work session — "start on <project>", "pick up where I left off", "/pm-start @path/to/root". Run once at session open.
 **Do NOT use when:** you just want a rerunnable read-only briefing with no live network sync → use `/pm-status`. Or wrapping up → use `/pm-end`.
 **Inputs expected:** `@<path>` to the project root on first run in a session (sets the marker). Subsequent commands in the same session read the marker. Optional `--full` (alias `--force`) anywhere in the args forces a complete live re-sync even if one already ran today.
-**Same-day re-run:** if a COMPLETE run already happened today for this project (per-project stamp `<root>/.pm/.last-start`), pm-start skips the repeating LIVE sync and just re-briefs from cache (like `/pm-status`) — pass `--full` to override.
+**Same-day re-run:** if a COMPLETE run already happened today for this project (per-project stamp `<root>/.pm/.last-start`), pm-start skips the repeating LIVE sync and just re-briefs from cache (like `/pm-status`), reporting how old the data is (`synced 5h 04m ago`) — pass `--full` to override. On this path the companion `live-sync.md` is never opened.
 **Outputs produced:** session marker `{{framework_root}}/sessions/<session-id>`; new meeting pointers appended to `<root>/meetings.jsonl`; regenerated `<root>/CALENDAR.md`; a printed briefing; a same-day daily stamp `<root>/.pm/.last-start` (COMPLETE runs only); and a paste-ready `/rename` + `/color` block.
 
 ## Related Skills
@@ -144,13 +144,23 @@ Decide whether the repeating LIVE sync runs, or this is a same-day re-brief. Det
 # Already-ran-today = stamp exists AND its stored date equals today's runtime date.
 STAMP="$ROOT/.pm/.last-start"
 TODAY="$(date +%F)"                                   # runtime date — never hardcode
-SKIP_SYNC=0
+SKIP_SYNC=0; SYNC_AGE=""
 if [[ "$FULL" -eq 0 && -r "$STAMP" ]]; then
   LAST_DAY="$(cut -d' ' -f1 "$STAMP" 2>/dev/null)"    # stored as "YYYY-MM-DD HH:MM"
   LAST_TIME="$(cut -d' ' -f2 "$STAMP" 2>/dev/null)"
   if [[ "$LAST_DAY" == "$TODAY" ]]; then
     SKIP_SYNC=1
-    echo "pm: already ran today (${LAST_TIME:-$LAST_DAY}) — skipping live sync. Use --full to force a complete re-sync."
+    # Report the AGE of the data, not just that a run happened. "already ran today (10:56)"
+    # buries the fact that a 16:00 pane is briefing on five-hour-old data; meetings, PRs and
+    # mail from the afternoon are simply absent. State the staleness up front.
+    STAMP_EPOCH="$(date -j -f '%Y-%m-%d %H:%M' "$LAST_DAY $LAST_TIME" +%s 2>/dev/null \
+                   || date -d "$LAST_DAY $LAST_TIME" +%s 2>/dev/null)"
+    if [[ -n "$STAMP_EPOCH" ]]; then
+      AGE_MIN=$(( ( $(date +%s) - STAMP_EPOCH ) / 60 ))
+      (( AGE_MIN < 0 )) && AGE_MIN=0
+      SYNC_AGE="$(printf '%dh %02dm' $((AGE_MIN/60)) $((AGE_MIN%60)))"
+    fi
+    echo "pm: synced ${SYNC_AGE:-earlier today} ago (${LAST_TIME:-$LAST_DAY}) — skipping live sync. /pm-start --full to re-sync."
   fi
 fi
 # SKIP_SYNC=1 → skip Steps 2, 3, 3b, 4 and the LIVE pulls in Step 5; still run the LOCAL
@@ -159,63 +169,18 @@ fi
 
 (Session branding — `/rename` + `/color` — is printed at the end in Step 8 for the user to paste; slash commands can't be invoked programmatically.)
 
-### Step 2 — Meeting catch-up (LIVE) — `tool:meetings`
+### Steps 2–4 — LIVE sync (COMPLETE runs only) — see `live-sync.md`
 
-- **If `SKIP_SYNC=1` (already ran today):** skip this step entirely — the cache-only briefing in Step 6 covers it. Only a COMPLETE run (`FULL=1` or first run of the day) does live catch-up.
-- **If `pm_tool_defined meetings` is false:** skip meeting catch-up entirely. Print: "tool:meetings not defined — skipping meeting catch-up (import meetings by hand)." Do not attempt any meeting fetch.
-- **Else:** run the catch-up **inline in the main session** — MCP-backed meeting tools can fail silently inside subagents. Invoke the `meetings` tool's configured provider (a meeting-import/catch-up flow — see `pm_tool_skills meetings`) to import new meetings into the archive at `pm_tool_root_or_notes meetings` (transcripts + an import-log index).
-  - _related: run `pm_tool_skills meetings` — surface the tool's linked skills as discovery hints; never auto-invoke._
+These four steps (meeting catch-up, meeting-pointer append, inbox scan, CALENDAR regen) are
+the only network-bound work in this skill, and a same-day re-brief skips all of them. They
+live in the companion doc [`live-sync.md`](./live-sync.md) so this file stays small: the
+model reads roughly 16 KB of live-sync prose only on the runs that actually execute it.
 
-### Step 3 — Append new meeting pointers — `tool:meetings`
-
-- **If `SKIP_SYNC=1` (already ran today):** skip — the day's pointers were appended by the earlier COMPLETE run; Step 6 reads them from `meetings.jsonl`.
-- **If `pm_tool_defined meetings` is false:** skip (no source to map from).
-- **Else:** map the project's meetings (those matching `$MEETINGS_SCOPE`, or falling back to keyword title match against `$KEYWORDS` when `$MEETINGS_SCOPE` is blank) to archived transcript paths, then append only NEW pointers to `<root>/meetings.jsonl` (dedupe by `meeting_id`). **The dedupe read and the append run inside one lock** so two concurrent tabs can't both read "id absent" and both append the same pointer:
-
-  ```bash
-  ARCHIVE="$(pm_tool_root_or_notes meetings)"          # meetings archive root (the meetings tool's root, else $PM_NOTES_ROOT)
-  source "{{framework_root}}/lib/with-lock.sh"
-  append_new_pointers() {
-    EXISTING=$(jq -r '.meeting_id' "$ROOT/meetings.jsonl" 2>/dev/null | sort -u)   # read INSIDE the lock
-    # for each candidate meeting (scoped by $MEETINGS_SCOPE) whose meeting_id is NOT in $EXISTING, append one pointer:
-    #   echo '{"meeting_id":..,"date":..,"title":..,"path":"'"$ARCHIVE"'/<file>"}' >> "$ROOT/meetings.jsonl"
-  }
-  mkdir -p "$ROOT/.pm"
-  with_lock "$ROOT/.pm/.meetings.lock" append_new_pointers
-  ```
-
-  Never duplicate transcripts — store pointers only. If `$MEETINGS_SCOPE` is blank, note it as a TODO.
-
-### Step 3b — Inbox scan (LIVE) — `tool:email`
-
-- **If `SKIP_SYNC=1` (already ran today):** skip the live inbox scan — a same-day re-brief does not re-hit mail. (The earlier COMPLETE run surfaced it; it is not written to a file, so a re-brief simply omits the fresh inbox section.)
-- **If `pm_tool_defined email` is false:** skip the inbox scan and say so: "tool:email not defined — skipping inbox scan." Do not attempt any mail fetch.
-- **Else:** pull this project's action items / commitments / threads needing a response from the `email` tool's configured provider, filtered by `$EMAIL_SCOPE` (the project's label/folder/sender filter), falling back to keyword subject match against `$KEYWORDS` when `$EMAIL_SCOPE` is blank. **Run inline in the main session — MCP-backed mail tools can fail silently inside subagents.** Surface the results in the briefing (Step 6); do not write them to a project file. If `$EMAIL_SCOPE` is blank, note it as a TODO.
-
-### Step 4 — Regenerate CALENDAR.md — `tool:calendar` + `tool:tasks` + `tool:github`
-
-- **If `SKIP_SYNC=1` (already ran today):** skip regeneration — `CALENDAR.md` was rebuilt by the earlier COMPLETE run; Step 6 reads it as-is (same as `/pm-status`). Only a COMPLETE run regenerates it.
-
-The **Synced** section (above the `<!-- PM:MANUAL -->` marker) is rebuilt from up to three tools, each guarded independently; **everything below the marker is preserved verbatim** (hand-added dated items). Build the Synced body as two sub-sections (keep them separate — do not interleave):
-
-- **Upcoming events** ← **`tool:calendar`**. If `pm_tool_defined calendar` is false, render this sub-section as `_(tool:calendar not defined — no events synced)_`. Else pull forward-looking events from its configured provider, scoped by `$CALENDAR_SCOPE` (fallback keyword match on `$KEYWORDS`).
-- **Due dates** ← **`tool:tasks`** + **`tool:github`** — two tools, merged and sorted by date. For each: if `pm_tool_defined <name>` is false, omit its lines and note "tool:<name> not defined — no due dates from it". Else pull forward-looking due dates from each tool's provider — `tool:tasks` from `$TASKS_SCOPE` (its tracker project), `tool:github` from `$GITHUB_SCOPE` (`owner/repo` issues/PRs with a due/milestone date).
-
-If a tool's ref is blank, leave its lines as a TODO and still preserve Manual. **Run the read-modify-write under a lock** so concurrent tabs can't clobber each other's regeneration; write to a temp file and atomic-`mv` into place so a reader never sees a half-rewritten file:
-
-  ```bash
-  source "{{framework_root}}/lib/with-lock.sh"
-  regen_calendar() {
-    MARKER='<!-- PM:MANUAL'
-    # preserved="$(sed -n "/$MARKER/,\$p" "$ROOT/CALENDAR.md")"   # marker line onward, kept verbatim
-    # rebuild the Synced section (Upcoming events + Due dates sub-sections) above the marker from
-    # tool:calendar / tool:tasks / tool:github (each guarded by pm_tool_defined), re-emit
-    # "$preserved" unchanged below it, then atomic-mv the temp file over "$ROOT/CALENDAR.md".
-  }
-  mkdir -p "$ROOT/.pm"
-  with_lock "$ROOT/.pm/.calendar.lock" regen_calendar
-  ```
-  - _related: `pm_tool_skills tasks` / `pm_tool_skills github` (discovery hints only)._
+- **If `SKIP_SYNC=1` (already ran today):** **do not open `live-sync.md`.** Skip straight to
+  Step 5 — the earlier COMPLETE run did this work, and Step 6 re-briefs from the cached
+  files it produced (`meetings.jsonl`, `CALENDAR.md`).
+- **If `SKIP_SYNC=0` (COMPLETE run):** read `live-sync.md` now and execute Steps 2, 3, 3b
+  and 4 exactly as written there, then return here and continue at Step 5.
 
 ### Step 5 — Read handoff + open work
 
@@ -241,6 +206,8 @@ Then pull open work from the LIVE trackers. **If `SKIP_SYNC=1` (already ran toda
 ### Step 6 — Print the briefing
 
 Always runs (both COMPLETE and same-day re-brief). **On a same-day re-brief (`SKIP_SYNC=1`) this is exactly the cache-only briefing `/pm-status` prints** — synthesize from the cached files (`LAST-SESSION.md`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`) and skip any section whose data comes only from a LIVE pull that did not run (e.g. the fresh inbox). Do not re-implement pm-status's cache read — mirror it.
+
+**On a same-day re-brief, open the briefing with the data's age** — `_Cached briefing — synced $SYNC_AGE ago. Meetings, PRs and mail since then are not reflected. `/pm-start --full` to re-sync._` A reader must not have to infer staleness from a skipped-step notice further up the transcript.
 
 Print these sections in order (omit a section when its tool is undefined, with a one-line note that it was skipped). Where a section is fed by a tool, append a one-line **related-skills** hint from `pm_tool_skills <name>` (discovery only — slash commands can't be auto-invoked):
 

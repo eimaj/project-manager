@@ -73,6 +73,14 @@ Read and synthesize from cache only: `LAST-SESSION.md` (lead with this), `CONTEX
 
 `LAST-SESSION.md` holds **one block per session** (`<!-- PM:SESSION <id> START -->`). Lead with this session's own block (`$SID` from Step 1) if present, else the most recent; note other sessions' blocks as concurrent work.
 
+**Also surface the panes on this project right now.** `LAST-SESSION.md` only records *finished* sessions (blocks are written by `/pm-end`), so a pane running since this morning appears nowhere in it. This is the live view — local, cheap, always run:
+
+```bash
+"{{framework_root}}/lib/active-panes.sh" --root "$ROOT"
+```
+
+Print as **"Other panes on this project now"**, or omit the section when there are none. **If `pm_tool_defined logs`:** for each sid listed, pull that session's recent entries for this project from the `logs` provider and summarize each pane in one line. Undefined ⇒ list panes without activity detail. Never fabricate another pane's activity.
+
 - **Status & recent decisions** — from `LAST-SESSION.md` + cached `tool:logs` entries if present (no live `tool:tasks` call)
 - **Open tasks / next actions** — `tool:todo` tagged `$TODO_SCOPE` (a local read against its provider, allowed) + cached `CONTEXT.md`. Do **not** hit `tool:tasks`/`tool:github` live; that is `/pm-start`.
 - **Upcoming** — `CALENDAR.md` as it stands (not regenerated)

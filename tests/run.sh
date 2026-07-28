@@ -819,6 +819,81 @@ else
   echo "  skip git not available — LAST-SESSION merge tests skipped"
 fi
 
+section "active-panes.sh"
+
+AP="$REPO/lib/active-panes.sh"
+
+# ap_fixture <dir> — a sessions dir + transcript root; echoes nothing, exports paths by
+# convention: $1/sessions, $1/projects/slug.
+ap_fixture() { mkdir -p "$1/sessions" "$1/projects/slug"; }
+ap_pane() {  # ap_pane <dir> <sid> <root> [stale]
+  printf '%s\n' "$3" > "$1/sessions/$2"
+  : > "$1/projects/slug/$2.jsonl"
+  [[ "${4:-}" == "stale" ]] && backdate "$1/projects/slug/$2.jsonl" 2
+  return 0
+}
+ap_run() { PM_SESSIONS_DIR="$1/sessions" PM_CC_PROJECTS="$1/projects" "$AP" "${@:2}"; }
+
+t_ap_lists_siblings_on_same_root() {
+  local d="$WORK/ap_same"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-one "$r"; ap_pane "$d" sid-two "$r"
+  local out; out="$(ap_run "$d" --root "$r")"
+  assert_contains "$out" "sid-one" "active-panes: lists first sibling"
+  assert_contains "$out" "sid-two" "active-panes: lists second sibling"
+}
+
+t_ap_excludes_other_projects() {
+  local d="$WORK/ap_other"; ap_fixture "$d"
+  local r1="$d/p1" r2="$d/p2"; mkdir -p "$r1" "$r2"
+  ap_pane "$d" sid-here "$r1"; ap_pane "$d" sid-elsewhere "$r2"
+  local out; out="$(ap_run "$d" --root "$r1")"
+  assert_contains "$out" "sid-here" "active-panes: lists a pane on this root"
+  if [[ "$out" != *"sid-elsewhere"* ]]; then pass "active-panes: excludes panes on another root"
+  else fail "active-panes: excludes panes on another root" "$out"; fi
+}
+
+t_ap_excludes_closed() {
+  # /pm-end drops sessions/.closed/<sid>; the pane must vanish from sibling views but its
+  # MARKER must survive so a later /pm-status in that pane still resolves the project.
+  local d="$WORK/ap_closed"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-open "$r"; ap_pane "$d" sid-done "$r"
+  mkdir -p "$d/sessions/.closed"; : > "$d/sessions/.closed/sid-done"
+  local out; out="$(ap_run "$d" --root "$r")"
+  assert_contains "$out" "sid-open" "active-panes: open pane still listed"
+  if [[ "$out" != *"sid-done"* ]]; then pass "active-panes: closed pane hidden from siblings"
+  else fail "active-panes: closed pane hidden from siblings" "$out"; fi
+  assert_eq "$r" "$(head -1 "$d/sessions/sid-done")" "active-panes: closed pane keeps its marker"
+}
+
+t_ap_excludes_dead() {
+  # A crashed pane never runs /pm-end. Markers are immortal, so liveness must come from the
+  # transcript, not from the marker's existence.
+  local d="$WORK/ap_dead"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-alive "$r"; ap_pane "$d" sid-crashed "$r" stale
+  local out; out="$(ap_run "$d" --root "$r" --live-mins 60)"
+  assert_contains "$out" "sid-alive" "active-panes: live pane listed"
+  if [[ "$out" != *"sid-crashed"* ]]; then pass "active-panes: pane with a cold transcript excluded"
+  else fail "active-panes: pane with a cold transcript excluded" "$out"; fi
+}
+
+t_ap_no_transcript_excluded() {
+  local d="$WORK/ap_notx"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  printf '%s\n' "$r" > "$d/sessions/sid-notranscript"     # marker only, no transcript ever
+  local out; out="$(ap_run "$d" --root "$r")"
+  assert_eq "" "$out" "active-panes: marker without a transcript is not a live pane"
+}
+
+t_ap_json_shape() {
+  local d="$WORK/ap_json"; ap_fixture "$d"; local r="$d/proj"; mkdir -p "$r"
+  ap_pane "$d" sid-json "$r"
+  local out; out="$(ap_run "$d" --root "$r" --json)"
+  assert_eq "sid-json" "$(printf '%s' "$out" | jq -r '.sid')" "active-panes: --json emits sid"
+  assert_eq "false"    "$(printf '%s' "$out" | jq -r '.self')" "active-panes: --json marks non-self panes"
+}
+
+t_ap_lists_siblings_on_same_root; t_ap_excludes_other_projects; t_ap_excludes_closed
+t_ap_excludes_dead; t_ap_no_transcript_excluded; t_ap_json_shape
+
 section "prune-markers.sh"
 
 PRUNE="$REPO/lib/prune-markers.sh"

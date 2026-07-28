@@ -132,6 +132,9 @@ fi
 test -f "$ROOT/.pm/config.json" || { echo "Not a PM project (run /pm-init): $ROOT"; exit 1; }
 mkdir -p "{{framework_root}}/sessions"
 printf '%s\n' "$ROOT" > "$MARKER"
+# Reopening clears any "closed" flag a previous /pm-end in THIS pane dropped, so sibling
+# panes list us as live again. Harmless when no flag exists.
+rm -f "{{framework_root}}/sessions/.closed/$SID"
 ```
 
 > **Why mint?** `session.sh` is a pure reader — with no harness session var (`CLAUDE_CODE_SESSION_ID` / `CLAUDE_SESSION_ID` / `PM_SESSION_PID` / `TERM_SESSION_ID`) it can only return a weak `tty-…`/`shell-$PPID` id, which collapses distinct sessions together. pm-start (the one skill that owns session-marker creation) mints a stable UUID once and persists it keyed by the shell's anchor (`{{framework_root}}/sessions/.mint/<anchor>`). Every later `session.sh` call in the same shell rediscovers it via its read-only mint lookup, so `/pm-status` and `/pm-end` resolve the identical id. When a real harness UUID is present, it is used directly and nothing is minted.
@@ -229,6 +232,16 @@ grep -oE 'PM:SESSION [^ ]+ START' "$ROOT/LAST-SESSION.md" | grep -v " $SID " || 
 ```
 
 These two LOCAL handoff reads always run — even on a same-day re-brief (they are cheap, cached files).
+
+**Then surface the panes working on this project RIGHT NOW.** `LAST-SESSION.md` blocks are written by `/pm-end`, so they only ever show *finished* sessions — a pane that has been running since 09:00 is invisible in them all day. This is the live view:
+
+```bash
+"{{framework_root}}/lib/active-panes.sh" --root "$ROOT"
+```
+
+Print the result as **"Other panes on this project now"** (session id short-form, idle time, when it opened), or omit the section entirely when there are none. This read always runs — it is local and cheap, and it is *most* valuable on a same-day re-brief, which is exactly when siblings are likely active.
+
+- **If `pm_tool_defined logs`:** for each sid listed, pull that session's recent entries for this project from the `logs` tool's configured provider (most loggers record a session id; filter on it) and summarize each pane in one line — what it has been doing. Undefined ⇒ list the panes without activity detail. Never fabricate what another pane is doing; if the logger cannot filter by session, say so and list panes only.
 
 Then pull open work from the LIVE trackers. **If `SKIP_SYNC=1` (already ran today):** skip this pull entirely — do not hit `tool:todo` / `tool:tasks` / `tool:github` / `tool:logs` live; the Step 6 briefing surfaces open work from the cached files instead (mirroring `/pm-status`). On a COMPLETE run, pull each bullet (guarded by `pm_tool_defined <name>`; omit with a note when undefined):
 

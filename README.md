@@ -9,6 +9,13 @@ The workflow it generates gives you **per-project context, live session sync, an
 handoffs** across long-running work — including **concurrent sessions** in separate tabs that
 never clobber each other's state.
 
+> 🧰 Part of a four-repo toolkit. `pm` is the session envelope around
+> [clog](https://github.com/eimaj/clog), [dev-prompter](https://github.com/eimaj/dev-prompter),
+> and [orchestrate](https://github.com/eimaj/orchestrate) — see
+> [eimaj/toolkit](https://github.com/eimaj/toolkit) for how they compose. Install `pm` **last**:
+> `/pm-generate` builds your tool registry from the skills and MCP servers it finds, so the more
+> that exist when it runs, the better the mapping. It works standalone; none are required.
+
 ---
 
 ## How it works

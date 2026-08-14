@@ -966,6 +966,225 @@ t_prune_reaps_sidecars() {
 t_prune_keeps_concurrent_same_root; t_prune_age; t_prune_live_protected
 t_prune_stale_transcript_not_protected; t_prune_dry_run_default; t_prune_reaps_sidecars
 
+# ── commit-paths.sh frozen-HEAD commit primitive ──────────────────────────────────
+section "commit-paths.sh"
+
+CP="$REPO/lib/commit-paths.sh"
+
+# cp_mk_repo <repo_dir> — a throwaway git repo (under $WORK, cleaned on exit) with one
+# seed commit, so there is a PARENT to build the first frozen-HEAD commit against.
+cp_mk_repo() {
+  local repo="$1"
+  git init -q "$repo"
+  git -C "$repo" config user.email t@example.com
+  git -C "$repo" config user.name  Tester
+  git -C "$repo" config commit.gpgsign false
+  echo seed > "$repo/seed.txt"
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "chore: seed"
+}
+
+t_cp_no_checkout_switch_stash_reset() {
+  # Grep-assertable: the primitive must never invoke a working-tree mutator against the
+  # target repo (the whole point of "frozen-HEAD" — see the header for the mechanism).
+  if grep -E 'git (checkout|switch|stash|reset|clean)' "$CP" >/dev/null; then
+    fail "commit-paths.sh: no checkout/switch/stash/reset/clean of the target repo" \
+         "$(grep -nE 'git (checkout|switch|stash|reset|clean)' "$CP")"
+  else
+    pass "commit-paths.sh: no checkout/switch/stash/reset/clean of the target repo"
+  fi
+}
+
+t_cp_only_named_paths() {
+  # A commit built from --paths carries EXACTLY those files — an unrelated dirty file in
+  # the same repo must never be swept in.
+  local d="$WORK/cp_named"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo a1 > "$repo/a.txt"; echo b1 > "$repo/b.txt"    # both dirty; only a.txt is named
+  local sha; sha="$("$CP" --repo "$repo" --branch chore/named --message "feat(x): a only" --paths a.txt)"
+  assert_eq "a.txt" "$(git -C "$repo" show --name-only --format= "$sha")" \
+    "commit-paths: commit contains only the named path"
+}
+
+t_cp_head_index_tree_unchanged() {
+  # THE core invariant: the repo's own HEAD sha and `git status --porcelain` are
+  # byte-identical before and after, success or failure — because the commit is built
+  # entirely against a scratch index, never the repo's real one.
+  local d="$WORK/cp_frozen"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo dirty > "$repo/dirty.txt"
+  local head_before status_before head_after status_after
+  head_before="$(git -C "$repo" rev-parse HEAD)"
+  status_before="$(git -C "$repo" status --porcelain)"
+  "$CP" --repo "$repo" --branch chore/frozen --message "feat(x): dirty file" --paths dirty.txt >/dev/null
+  head_after="$(git -C "$repo" rev-parse HEAD)"
+  status_after="$(git -C "$repo" status --porcelain)"
+  assert_eq "$head_before" "$head_after" "commit-paths: repo HEAD sha unchanged"
+  assert_eq "$status_before" "$status_after" "commit-paths: git status --porcelain byte-identical"
+}
+
+t_cp_second_call_chains_parent() {
+  # A second call against the SAME branch must build on top of the first commit, not
+  # replace it or branch off the original base again.
+  local d="$WORK/cp_chain"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo a1 > "$repo/a.txt"
+  local sha1; sha1="$("$CP" --repo "$repo" --branch chore/chain --message "feat(x): first" --paths a.txt)"
+  echo a2 >> "$repo/a.txt"
+  local sha2; sha2="$("$CP" --repo "$repo" --branch chore/chain --message "feat(x): second" --paths a.txt)"
+  assert_eq "$sha1" "$(git -C "$repo" rev-parse "chore/chain^")" "commit-paths: second commit's parent is the first"
+  assert_eq 2 "$(git -C "$repo" rev-list --count "$(git -C "$repo" symbolic-ref --short HEAD)..chore/chain")" \
+    "commit-paths: branch carries exactly two new commits"
+}
+
+t_cp_append_only_guard_aborts() {
+  # A net-negative diff under an --append-only prefix must abort loudly (distinct rc) and
+  # write NOTHING — the incident-2 reversion guard.
+  local d="$WORK/cp_appendonly"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  printf 'l1\nl2\nl3\n' > "$repo/log.jsonl"
+  local sha1; sha1="$("$CP" --repo "$repo" --branch chore/log --message "chore(logs): seed" --paths log.jsonl)"
+  printf 'l1\n' > "$repo/log.jsonl"                    # net deletion vs. the branch tip
+  local out rc=0
+  out="$("$CP" --repo "$repo" --branch chore/log --message "chore(logs): revert" --paths log.jsonl --append-only log.jsonl 2>&1)" || rc=$?
+  assert_eq 20 "$rc" "commit-paths: append-only guard aborts with a distinct rc"
+  assert_contains "$out" "append-only guard" "commit-paths: append-only guard names the offending file"
+  assert_eq "$sha1" "$(git -C "$repo" rev-parse chore/log)" "commit-paths: append-only guard leaves the branch tip untouched"
+}
+
+t_cp_append_only_guard_allows_growth() {
+  # The same prefix with a NET-POSITIVE diff (pure growth) must be allowed through.
+  local d="$WORK/cp_appendgrow"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  printf 'l1\n' > "$repo/log.jsonl"
+  "$CP" --repo "$repo" --branch chore/loggrow --message "chore(logs): seed" --paths log.jsonl >/dev/null
+  printf 'l1\nl2\n' > "$repo/log.jsonl"
+  local rc=0
+  "$CP" --repo "$repo" --branch chore/loggrow --message "chore(logs): grow" --paths log.jsonl --append-only log.jsonl >/dev/null 2>&1 || rc=$?
+  assert_eq 0 "$rc" "commit-paths: append-only guard allows net-positive growth"
+  assert_eq 2 "$(git -C "$repo" rev-list --count "$(git -C "$repo" symbolic-ref --short HEAD)..chore/loggrow")" \
+    "commit-paths: growth commit landed on the branch"
+}
+
+t_cp_dir_expansion_echoes() {
+  # A directory --paths entry expands to the dirty files under it (modified + untracked)
+  # and the expansion is always echoed to stderr — nothing is swept in silently.
+  local d="$WORK/cp_direxp"; local repo="$d/repo"; mkdir -p "$d/repo/sub"
+  cp_mk_repo "$repo"
+  echo x > "$repo/sub/x.txt"; echo y > "$repo/sub/y.txt"   # both untracked
+  local err="$d/err.txt" sha
+  sha="$("$CP" --repo "$repo" --branch chore/direxp --message "feat(y): dir" --paths sub 2>"$err")"
+  assert_contains "$(cat "$err")" "expanded dir 'sub'" "commit-paths: directory expansion is echoed to stderr"
+  local files; files="$(git -C "$repo" show --name-only --format= "$sha" | sort | tr '\n' ' ')"
+  assert_eq "sub/x.txt sub/y.txt " "$files" "commit-paths: directory expands to both dirty files"
+}
+
+t_cp_bad_message_rejected() {
+  # A non-conforming message is rejected with a distinct rc and nothing is written — this
+  # plumbing path fires no commit-msg hook, so the lint here is what enforces the rule.
+  local d="$WORK/cp_badmsg"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo a1 > "$repo/a.txt"
+  local rc=0
+  "$CP" --repo "$repo" --branch chore/badmsg --message "totally not conventional" --paths a.txt >/dev/null 2>&1 || rc=$?
+  assert_eq 10 "$rc" "commit-paths: non-conforming message rejected with a distinct rc"
+  assert_eq "" "$(git -C "$repo" branch --list chore/badmsg)" "commit-paths: bad message creates no branch"
+}
+
+t_cp_noop_skip_no_commit() {
+  # Calling again with a file list whose content already matches the branch tip must be a
+  # silent no-op — never an empty commit.
+  local d="$WORK/cp_noop"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo a1 > "$repo/a.txt"
+  "$CP" --repo "$repo" --branch chore/noop --message "feat(x): first" --paths a.txt >/dev/null
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  local before; before="$(git -C "$repo" rev-list --count "$base..chore/noop")"
+  local out rc=0
+  out="$("$CP" --repo "$repo" --branch chore/noop --message "feat(x): first" --paths a.txt)" || rc=$?
+  assert_eq 0 "$rc" "commit-paths: no-op call exits 0"
+  assert_eq "" "$out" "commit-paths: no-op call prints nothing"
+  assert_eq "$before" "$(git -C "$repo" rev-list --count "$base..chore/noop")" "commit-paths: no-op call adds no commit"
+}
+
+t_cp_cas_retry_both_land() {
+  # Two concurrent calls building on the SAME branch race the CAS; the second must
+  # re-resolve the tip and retry once rather than losing the first writer's commit.
+  local d="$WORK/cp_cas"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo a1 > "$repo/a.txt"; echo b1 > "$repo/b.txt"
+  "$CP" --repo "$repo" --branch chore/race --message "feat(a): file a" --paths a.txt >/dev/null 2>&1 &
+  local p1=$!
+  "$CP" --repo "$repo" --branch chore/race --message "feat(b): file b" --paths b.txt >/dev/null 2>&1 &
+  local p2=$!
+  wait "$p1"; wait "$p2"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  assert_eq 2 "$(git -C "$repo" rev-list --count "$base..chore/race")" "commit-paths: CAS race — both commits landed"
+  local files; files="$(git -C "$repo" log --format= --name-only "$base..chore/race" | sed '/^$/d' | sort | tr '\n' ' ')"
+  assert_eq "a.txt b.txt " "$files" "commit-paths: CAS race — both files present across the branch"
+}
+
+t_cp_rename_drops_old_path() {
+  # Reviewer-reproduced regression: `git mv a b` then committing via a directory --paths
+  # entry used to leave BOTH `a` and `b` in the built tree — `git add -- b` alone never
+  # removes `a` from a scratch index seeded via `read-tree $PARENT` (PARENT still tracks
+  # `a`). The fix passes the orig path through explicitly too, so `git add` stages its
+  # removal (ordinary git add behavior for an explicitly-named, now-missing path).
+  local d="$WORK/cp_rename"; local repo="$d/repo"; mkdir -p "$d/repo/sub"
+  cp_mk_repo "$repo"
+  echo content > "$repo/sub/orig.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -q -m "chore: add orig"
+  git -C "$repo" mv sub/orig.txt sub/renamed.txt
+  local sha; sha="$("$CP" --repo "$repo" --branch chore/rename --message "feat(x): rename" --paths sub)"
+  local tree; tree="$(git -C "$repo" ls-tree -r --name-only "$sha" -- sub | sort | tr '\n' ' ')"
+  assert_eq "sub/renamed.txt " "$tree" "commit-paths: rename drops the old path from the built tree"
+}
+
+t_cp_refuses_checked_out_branch() {
+  # Reviewer-reproduced regression: --branch == the repo's checked-out branch moved the
+  # REAL HEAD sha and corrupted `git status` (a file showing as both staged-deleted and
+  # untracked). Must now fail loud with a distinct rc, before any work, and touch nothing.
+  local d="$WORK/cp_sameBranch"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  local base_branch; base_branch="$(git -C "$repo" symbolic-ref --short HEAD)"
+  echo dirty > "$repo/dirty.txt"
+  local head_before status_before
+  head_before="$(git -C "$repo" rev-parse HEAD)"
+  status_before="$(git -C "$repo" status --porcelain)"
+  local rc=0
+  "$CP" --repo "$repo" --branch "$base_branch" --message "feat(x): same branch" --paths dirty.txt >/dev/null 2>&1 || rc=$?
+  assert_eq 3 "$rc" "commit-paths: --branch == checked-out branch fails with a distinct rc"
+  assert_eq "$head_before" "$(git -C "$repo" rev-parse HEAD)" "commit-paths: checked-out-branch refusal leaves HEAD sha unchanged"
+  assert_eq "$status_before" "$(git -C "$repo" status --porcelain)" "commit-paths: checked-out-branch refusal leaves status unchanged"
+}
+
+t_cp_append_only_binary_aborts() {
+  # Reviewer-reproduced regression: `git diff --numstat` reports "-"/"-" for a binary
+  # file, so the old guard silently SKIPPED it — a stale binary overwrite under an
+  # append-only prefix would sail through undetected. Now it must abort loudly (same rc
+  # as the net-negative case), leaving the branch tip untouched.
+  local d="$WORK/cp_binary"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  printf '\x00\x01binary-seed' > "$repo/blob.bin"
+  local sha1; sha1="$("$CP" --repo "$repo" --branch chore/binary --message "chore(logs): seed bin" --paths blob.bin)"
+  printf '\x00\x01binary-changed-content' > "$repo/blob.bin"
+  local out rc=0
+  out="$("$CP" --repo "$repo" --branch chore/binary --message "chore(logs): update bin" \
+    --paths blob.bin --append-only blob.bin 2>&1)" || rc=$?
+  assert_eq 20 "$rc" "commit-paths: binary file under append-only prefix aborts with a distinct rc"
+  assert_contains "$out" "binary" "commit-paths: binary abort message names the file as binary"
+  assert_eq "$sha1" "$(git -C "$repo" rev-parse chore/binary)" "commit-paths: binary abort leaves the branch tip untouched"
+}
+
+if command -v git >/dev/null 2>&1; then
+  t_cp_no_checkout_switch_stash_reset; t_cp_only_named_paths; t_cp_head_index_tree_unchanged
+  t_cp_second_call_chains_parent; t_cp_append_only_guard_aborts; t_cp_append_only_guard_allows_growth
+  t_cp_dir_expansion_echoes; t_cp_bad_message_rejected; t_cp_noop_skip_no_commit; t_cp_cas_retry_both_land
+  t_cp_rename_drops_old_path; t_cp_refuses_checked_out_branch; t_cp_append_only_binary_aborts
+else
+  echo "  skip git not available — commit-paths.sh tests skipped"
+fi
+
 section "session-commit.sh"
 
 SCM="$REPO/lib/session-commit.sh"
@@ -999,7 +1218,8 @@ t_scm_shortsid() {
 
 t_scm_distinct_branches() {
   # Two distinct sids -> two distinct branches, each with exactly one commit touching
-  # only the project folder; the original branch is restored after each run.
+  # only the project folder; the repo's checked-out branch never moves (frozen-HEAD —
+  # there is no checkout of the session branch to "restore" from in the first place).
   local d="$WORK/scm_distinct"; local repo="$d/repo"; mkdir -p "$d"
   scm_mk_repo "$repo"
   local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
@@ -1014,7 +1234,7 @@ t_scm_distinct_branches() {
   assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$ba")" "branch A: exactly one new commit"
   assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$bb")" "branch B: exactly one new commit"
   assert_eq "pa/a.txt" "$(git -C "$repo" show --name-only --format= "$ba")" "branch A commit touches only project folder"
-  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "original branch restored after commits"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "checked-out branch unchanged after commits"
 }
 
 t_scm_weird_sid_valid_ref() {
@@ -1029,19 +1249,47 @@ t_scm_weird_sid_valid_ref() {
 }
 
 t_scm_no_empty_commit() {
-  # No changes under the project folder -> no commit; original branch restored.
+  # No (non-churn) changes under the project folder -> no commit, and (unlike the old
+  # checkout-based version) no branch ref is created at all — commit_paths is never
+  # invoked, so there is nothing for the EOD reconcile to find or merge. The branch NAME
+  # is still echoed (callers/tests rely on that), just not backed by a ref yet.
   local d="$WORK/scm_empty"; local repo="$d/repo"; mkdir -p "$d"
   scm_mk_repo "$repo"
   local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
   local br; br="$("$SCM" --root "$repo/pa" --session "sid-C" --name "Demo Proj")"
-  assert_eq 0 "$(git -C "$repo" rev-list --count "$base..$br")" "no changes -> no empty commit"
-  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "no-change: original branch restored"
+  assert_contains "$br" "-pm-sid-c" "no changes -> branch name still echoed"
+  assert_eq "" "$(git -C "$repo" branch --list "$br")" "no changes -> no branch ref created"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "no-change: checked-out branch unchanged"
+}
+
+t_scm_churn_exclusion() {
+  # THE ownership split this rewire encodes: pm-end commits session report output but
+  # NEVER the churn set (CALENDAR.*, meetings.jsonl, .pm/, LAST-SESSION.md) — those are
+  # the EOD sweep's (pa-eod-wrap), committed once daily across every registered root, so
+  # N per-session branches never each carry the same CALENDAR.md/meetings.jsonl change.
+  local d="$WORK/scm_churn"; local repo="$d/repo"; mkdir -p "$d"
+  scm_mk_repo "$repo"
+  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
+  mkdir -p "$repo/pa/reports"
+  echo "report body" > "$repo/pa/reports/2026-08-13-session.md"   # session output: SHOULD commit
+  echo "cal"          > "$repo/pa/CALENDAR.md"                    # churn: must NOT commit
+  echo '{"m":1}'      > "$repo/pa/meetings.jsonl"                 # churn: must NOT commit
+  echo '{"x":1}'      > "$repo/pa/.pm/newfield.json"              # churn (.pm/): must NOT commit
+  echo "last"         > "$repo/pa/LAST-SESSION.md"                # churn: must NOT commit
+  local br; br="$("$SCM" --root "$repo/pa" --session "sid-CHURN" --name "Demo Proj")"
+  local files; files="$(git -C "$repo" show --name-only --format= "$br" | sort | tr '\n' ' ')"
+  assert_eq "pa/reports/2026-08-13-session.md " "$files" "churn exclusion: commit carries only the report file"
+  assert_contains "$(git -C "$repo" status --porcelain)" "CALENDAR.md" "churn exclusion: CALENDAR.md stays dirty on disk"
+  assert_contains "$(git -C "$repo" status --porcelain)" "meetings.jsonl" "churn exclusion: meetings.jsonl stays dirty on disk"
+  assert_contains "$(git -C "$repo" status --porcelain)" "LAST-SESSION.md" "churn exclusion: LAST-SESSION.md stays dirty on disk"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "churn exclusion: checked-out branch unchanged"
 }
 
 t_scm_untracked_folder_preserved() {
-  # Regression: when the project folder is UNTRACKED on the base branch, the snapshot
-  # commit + branch-restore must NOT delete it from the SHARED working tree. (Before the
-  # fix, restoring base removed the folder because it became tracked-in-old-HEAD only.)
+  # Regression (pre-rewire): when the project folder was UNTRACKED on the base branch, the
+  # old checkout+restore dance deleted it from the SHARED working tree on restore. Under
+  # frozen-HEAD there is no checkout at all, so the folder can never be touched — this
+  # test keeps the original assertions as a regression guard.
   local d="$WORK/scm_untracked"; local repo="$d/repo"; mkdir -p "$d"
   scm_mk_repo "$repo"
   local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
@@ -1051,7 +1299,7 @@ t_scm_untracked_folder_preserved() {
   echo '{"name":"P"}' > "$repo/proj/.pm/config.json"
   local br; br="$("$SCM" --root "$repo/proj" --session "sid-UNTRACKED" --name "Untracked Proj")"
   assert_eq 1 "$(git -C "$repo" rev-list --count "$base..$br")" "untracked folder: one snapshot commit created"
-  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "untracked folder: original branch restored"
+  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "untracked folder: checked-out branch unchanged"
   assert_eq "yes" "$([[ -f "$repo/proj/CONTEXT.md" && -f "$repo/proj/.pm/config.json" ]] && echo yes || echo no)" \
     "untracked folder: working-tree files survive the snapshot commit"
   assert_file_contains "$repo/proj/CONTEXT.md" "hello" "untracked folder: file content intact"
@@ -1059,42 +1307,21 @@ t_scm_untracked_folder_preserved() {
     "untracked folder: file stays untracked on base (not silently added)"
 }
 
-t_scm_lock_held_fails_loud() {
-  # A held tree lock must make session_commit FAIL LOUD and leave the tree untouched,
-  # rather than proceed unlocked and stage the project onto whatever branch is checked out.
-  local d="$WORK/scm_lock_held"; local repo="$d/repo"; mkdir -p "$d"
-  scm_mk_repo "$repo"
-  local base; base="$(git -C "$repo" symbolic-ref --short HEAD)"
-  echo change > "$repo/pa/new.txt"
-  local gitdir; gitdir="$(git -C "$repo" rev-parse --absolute-git-dir)"
-  mkdir "$gitdir/.pm-tree.lock"                      # simulate a concurrent pane holding it
-  local out rc=0
-  # High stale threshold so the held lock is not broken as stale — we are testing contention.
-  out="$(PM_LOCK_STALE_AFTER=9999 "$SCM" --root "$repo/pa" --session "sid-BLOCKED" --name "PA" 2>&1)" || rc=$?
-  rmdir "$gitdir/.pm-tree.lock"
-  if [[ "$rc" -ne 0 ]]; then pass "lock held: session_commit fails loud"
-  else fail "lock held: session_commit fails loud" "rc=0 out=[$out]"; fi
-  assert_eq "$base" "$(git -C "$repo" symbolic-ref --short HEAD)" "lock held: HEAD unchanged"
-  assert_eq "" "$(git -C "$repo" branch --list 'chore/*-pm-*' | tr -d ' *')" \
-    "lock held: no session branch created"
-}
-
-t_scm_lock_released() {
-  # The lock is released as soon as the critical section returns, so the next run proceeds.
-  local d="$WORK/scm_lock_rel"; local repo="$d/repo"; mkdir -p "$d"
-  scm_mk_repo "$repo"
-  echo change > "$repo/pa/new.txt"
-  "$SCM" --root "$repo/pa" --session "sid-REL" --name "PA" >/dev/null 2>&1
-  local gitdir; gitdir="$(git -C "$repo" rev-parse --absolute-git-dir)"
-  if [[ ! -d "$gitdir/.pm-tree.lock" ]]; then pass "tree lock released after a normal run"
-  else fail "tree lock released after a normal run" "$gitdir/.pm-tree.lock still present"; fi
+t_scm_no_checkout_switch_stash_reset() {
+  # Grep-assertable: the rewired commit path must never invoke a working-tree mutator
+  # against the target repo — same invariant as commit-paths.sh itself.
+  if grep -E 'git (checkout|switch|stash|reset|clean)' "$SCM" >/dev/null; then
+    fail "session-commit.sh: no checkout/switch/stash/reset/clean of the target repo" \
+         "$(grep -nE 'git (checkout|switch|stash|reset|clean)' "$SCM")"
+  else
+    pass "session-commit.sh: no checkout/switch/stash/reset/clean of the target repo"
+  fi
 }
 
 t_scm_concurrent_no_crosstalk() {
-  # THE regression this lock exists for: two concurrent /pm-end runs in ONE shared tree —
-  # on two DIFFERENT projects — must each land their own snapshot on their OWN branch.
-  # Unlocked, they interleave checkout/add/commit/restore and commit onto each other's
-  # branches (or onto base). This is why the lock is repo-scoped, not project-scoped.
+  # Two concurrent /pm-end runs in ONE shared tree — on two DIFFERENT projects — must
+  # each land their own commit on their OWN branch. No lock is needed for this anymore:
+  # each targets a DIFFERENT branch, so there is no CAS collision and no checkout to race.
   local d="$WORK/scm_concurrent"; local repo="$d/repo"; mkdir -p "$d"
   scm_mk_repo "$repo"
   mkdir -p "$repo/pb/.pm"; echo seedb > "$repo/pb/seed.txt"
@@ -1125,8 +1352,8 @@ t_scm_concurrent_no_crosstalk() {
 
 if command -v git >/dev/null 2>&1; then
   t_scm_shortsid; t_scm_distinct_branches; t_scm_weird_sid_valid_ref; t_scm_no_empty_commit
-  t_scm_untracked_folder_preserved
-  t_scm_lock_held_fails_loud; t_scm_lock_released; t_scm_concurrent_no_crosstalk
+  t_scm_churn_exclusion; t_scm_untracked_folder_preserved; t_scm_no_checkout_switch_stash_reset
+  t_scm_concurrent_no_crosstalk
 else
   echo "  skip git not available — session-commit.sh integration tests skipped"
 fi

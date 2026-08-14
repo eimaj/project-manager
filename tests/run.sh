@@ -1176,11 +1176,62 @@ t_cp_append_only_binary_aborts() {
   assert_eq "$sha1" "$(git -C "$repo" rev-parse chore/binary)" "commit-paths: binary abort leaves the branch tip untouched"
 }
 
+t_cp_base_parents_new_branch() {
+  # Live defect from the retro: on a repo whose local HEAD has advanced past a stale
+  # ref (mirrors the shared ~/Code/logs checkout, whose local main is deliberately never
+  # fast-forwarded mid-day), --base must parent a BRAND-NEW branch at the given ref, NOT
+  # at the repo's current HEAD.
+  local d="$WORK/cp_base"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  local base_sha; base_sha="$(git -C "$repo" rev-parse HEAD)"
+  echo advance >> "$repo/seed.txt"
+  git -C "$repo" commit -q -am "chore: advance local head"
+  local head_now; head_now="$(git -C "$repo" rev-parse HEAD)"
+  echo newfile > "$repo/newfile.txt"
+  local sha; sha="$("$CP" --repo "$repo" --branch chore/basetest --message "feat(x): base ref" \
+    --paths newfile.txt --base "$base_sha")"
+  local parent; parent="$(git -C "$repo" log --format=%P -1 "$sha")"
+  assert_eq "$base_sha" "$parent" "commit-paths: --base parents the new branch at the given ref"
+  if [[ "$parent" != "$head_now" ]]; then pass "commit-paths: --base does NOT parent at HEAD"
+  else fail "commit-paths: --base does NOT parent at HEAD" "parent matched head_now=[$head_now]"; fi
+}
+
+t_cp_base_unresolvable_aborts() {
+  # An unresolvable --base must abort loud with a distinct rc, never silently fall back
+  # to HEAD (a typo'd ref silently defaulting to HEAD would defeat the whole point).
+  local d="$WORK/cp_basebad"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo x > "$repo/x.txt"
+  local rc=0
+  "$CP" --repo "$repo" --branch chore/basebad --message "feat(x): bad base" \
+    --paths x.txt --base refs/heads/does-not-exist >/dev/null 2>&1 || rc=$?
+  assert_eq 4 "$rc" "commit-paths: unresolvable --base aborts with a distinct rc"
+  assert_eq "" "$(git -C "$repo" branch --list chore/basebad)" "commit-paths: unresolvable --base creates no branch"
+}
+
+t_cp_base_ignored_when_branch_exists() {
+  # --base is only consulted when --branch does NOT already exist. Once the branch
+  # exists, a garbage --base must be silently ignored — the branch's own tip is the
+  # honest parent, not the (possibly unresolvable) --base value.
+  local d="$WORK/cp_baseexists"; local repo="$d/repo"; mkdir -p "$d"
+  cp_mk_repo "$repo"
+  echo a1 > "$repo/a.txt"
+  local sha1; sha1="$("$CP" --repo "$repo" --branch chore/baseexists --message "feat(x): first" --paths a.txt)"
+  echo a2 >> "$repo/a.txt"
+  local sha2 rc=0
+  sha2="$("$CP" --repo "$repo" --branch chore/baseexists --message "feat(x): second" \
+    --paths a.txt --base refs/heads/does-not-exist)" || rc=$?
+  assert_eq 0 "$rc" "commit-paths: --base with an existing branch does not error"
+  assert_eq "$sha1" "$(git -C "$repo" log --format=%P -1 "$sha2")" \
+    "commit-paths: --base ignored — second commit parents at the branch's own tip"
+}
+
 if command -v git >/dev/null 2>&1; then
   t_cp_no_checkout_switch_stash_reset; t_cp_only_named_paths; t_cp_head_index_tree_unchanged
   t_cp_second_call_chains_parent; t_cp_append_only_guard_aborts; t_cp_append_only_guard_allows_growth
   t_cp_dir_expansion_echoes; t_cp_bad_message_rejected; t_cp_noop_skip_no_commit; t_cp_cas_retry_both_land
   t_cp_rename_drops_old_path; t_cp_refuses_checked_out_branch; t_cp_append_only_binary_aborts
+  t_cp_base_parents_new_branch; t_cp_base_unresolvable_aborts; t_cp_base_ignored_when_branch_exists
 else
   echo "  skip git not available — commit-paths.sh tests skipped"
 fi

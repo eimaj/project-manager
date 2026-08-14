@@ -112,11 +112,14 @@ other. The framework isolates per-session state and locks the shared state it mu
   break a >30s stale lock → fail loud) guards `meetings.jsonl` append (the dedupe read + append
   run **inside** one lock) and `CALENDAR.md` regeneration (temp file + atomic `mv`). `scaffold.sh`
   uses the same helper for the registry upsert.
-- **Per-session commit branch** — `pm-end`'s optional git step (`lib/session-commit.sh`) commits
-  **only the project folder** on a per-session branch `chore/$DAY-$SLUG-pm-<shortsid>` (short,
-  ref-safe form of the session id), so concurrent tabs never race on one shared ref or index. The
-  working tree is shared, so it captures the branch you were on and restores it afterward. Never
-  pushes, never targets `main`. Reconcile the per-session branches into one branch/PR at EOD.
+- **Per-session commit branch** — `pm-end`'s optional git step (`lib/session-commit.sh`, via
+  `lib/commit-paths.sh`) commits **only the project folder, minus the churn exclusion set**
+  (`CALENDAR.*`, `meetings.jsonl`, `.pm/`, `LAST-SESSION.md` — those are the EOD sweep's) on a
+  per-session branch `chore/$DAY-$SLUG-pm-<shortsid>` (short, ref-safe form of the session id).
+  It is a **frozen-HEAD commit**: the shared repo's real HEAD, index, and working tree are never
+  touched — the commit is built entirely against a scratch git index (`GIT_INDEX_FILE`), so
+  concurrent tabs never race on the shared ref, index, or a checkout. Never pushes, never targets
+  `main`. Reconcile the per-session branches into one branch/PR at EOD.
 - **`auto_ship` (per-project, opt-in)** — a boolean in each project's `.pm/config.json`, **default
   `false`**. When `false`, `pm-end` stops after the local per-session commit and you reconcile the
   branches manually at EOD (above). Set it to `true` to have `pm-end` **auto-ship** each session's
@@ -146,7 +149,8 @@ pm/
     with-lock.sh             #   reusable atomic mkdir lock (retry/stale-break/fail-loud)
     scaffold.sh              #   scaffold a project's files; upsert the registry
     handoff-write.sh         #   atomic per-session LAST-SESSION.md block update
-    session-commit.sh        #   per-session pm-end commit branch
+    commit-paths.sh          #   frozen-HEAD commit primitive (scratch-index, no checkout)
+    session-commit.sh        #   per-session pm-end commit branch, via commit-paths.sh
     config.sh                #   read the personal config, expose generic tool accessors
   templates/pm-{init,start,status,end}/SKILL.md   # placeholder skills, RENDERED by pm-generate
   skills/pm-generate/        # the generator skill itself (symlinked by install.sh)

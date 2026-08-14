@@ -15,9 +15,27 @@
 #
 # Usage:
 #   commit-paths.sh --repo <path> --branch <name> --message <msg> \
-#                    --paths <p1> [<p2> ...] [--append-only <prefix>] [--append-only <prefix> ...]
+#                    --paths <p1> [<p2> ...] [--base <ref>] \
+#                    [--append-only <prefix>] [--append-only <prefix> ...]
 #   Prints the new commit sha on stdout on success. Prints nothing and exits 0 when the
 #   resulting tree is identical to the branch tip (no-op skip — never an empty commit).
+#
+# --base <ref> (optional) — only consulted when --branch does NOT already exist; ignored
+# entirely otherwise. When given, it REPLACES HEAD as the PARENT a brand-new branch is
+# built from (see mechanism step 1). Must resolve (`git rev-parse -q --verify`) or the
+# call aborts loudly with a distinct rc — a typo'd or unreachable --base must never
+# silently fall back to HEAD. Why this exists: on a repo whose real HEAD is deliberately
+# frozen/stale relative to origin (the shared `~/Code/logs` checkout is a deliberate
+# example: its local `main` is never fast-forwarded mid-day — see session-commit.sh's
+# and pm-end's own docs for why — so it drifts behind `origin/main` day over day),
+# building a fresh daily/session branch from HEAD would parent it at that same drifting
+# tip, compounding the staleness across every new branch. Callers driving such a tree
+# pass an origin ref instead (e.g. `--base origin/main`) so each new branch starts from a
+# ref that's actually current. `pm-end`'s per-session branches deliberately OMIT --base:
+# a session's own tree content is honestly based on whatever the local checkout's HEAD
+# was at that moment, so HEAD is the correct, honest parent there — only a caller
+# building fresh branches on a checkout whose local main is intentionally not kept
+# current needs --base at all.
 #
 # --paths entries are files, repo-relative or absolute. A DIRECTORY entry is expanded at
 # call time to the files `git status --porcelain` reports dirty under it (modified +
@@ -51,8 +69,12 @@
 #      `--branch main` while `main` is checked out moves the repo's real HEAD sha and
 #      corrupts `git status` immediately. This is exactly the M1 failure class the whole
 #      file exists to make impossible, so it is asserted rather than merely documented.
-#   1. PARENT = the tip of --branch if it already exists, else the repo's current HEAD
-#      commit. This is the honest ancestry the new commit is built from.
+#   1. PARENT = the tip of --branch if it already exists (--base is ignored in this
+#      case — an existing branch's own history is always the honest parent); else the
+#      resolved --base ref if one was given (validated by `git rev-parse -q --verify`,
+#      abort loud on failure); else the repo's current HEAD commit (the default,
+#      unchanged from before --base existed). See the --base doc above for why a caller
+#      would ever need this.
 #   2. A brand-new scratch index file (`mktemp`, removed by a trap on the subshell's
 #      exit — success or failure) is pointed to via GIT_INDEX_FILE. `git read-tree
 #      $PARENT` seeds it with PARENT's tree, then `git add -- <files>` stages ONLY the
@@ -78,9 +100,11 @@
 #      code rather than retrying forever.
 #
 # Exit codes: 0 success (sha printed) or silent no-op; 2 usage/arg error; 3 --branch is
-# the repo's checked-out branch (refused, see mechanism step 0); 10 message lint failure;
-# 20 append-only guard triggered (net deletions, or a binary file under a guarded prefix);
-# 21-24 an unexpected git-plumbing failure mid-build; 30 the one-shot CAS retry also failed.
+# the repo's checked-out branch (refused, see mechanism step 0); 4 --base was given but
+# does not resolve (only checked when --branch doesn't already exist — see step 1);
+# 10 message lint failure; 20 append-only guard triggered (net deletions, or a binary
+# file under a guarded prefix); 21-24 an unexpected git-plumbing failure mid-build;
+# 30 the one-shot CAS retry also failed.
 #
 # Safe to source: this file defines `commit_paths` (and private `_cp_*` helpers) and only
 # auto-runs when EXECUTED directly — mirrors session-commit.sh so callers (session-commit.sh
@@ -156,16 +180,25 @@ _cp_expand_paths() {
   done
 }
 
+# _cp_resolve_base <repo> <ref> — echo the resolved sha of <ref> in <repo> on stdout;
+# non-zero (no output) if it doesn't resolve. A thin wrapper so the exact same
+# resolution runs both in the initial PARENT pick and the CAS-retry rebuild (see
+# mechanism step 1 in the header) without duplicating the `git rev-parse` invocation.
+_cp_resolve_base() {
+  git -C "$1" rev-parse -q --verify "$2" 2>/dev/null
+}
+
 # commit_paths --repo <path> --branch <name> --message <msg> --paths <p...> \
-#              [--append-only <prefix>]...
+#              [--base <ref>] [--append-only <prefix>]...
 commit_paths() {
-  local REPO_ARG="" BRANCH="" MESSAGE=""
+  local REPO_ARG="" BRANCH="" MESSAGE="" BASE=""
   local -a PATH_ARGS=() APPEND_ONLY=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo)    REPO_ARG="$2"; shift 2 ;;
       --branch)  BRANCH="$2"; shift 2 ;;
       --message) MESSAGE="$2"; shift 2 ;;
+      --base)    BASE="$2"; shift 2 ;;
       --paths)
         shift
         while [[ $# -gt 0 && "$1" != --* ]]; do PATH_ARGS+=("$1"); shift; done
@@ -209,11 +242,16 @@ commit_paths() {
     return 0
   fi
 
-  # PARENT: the branch's own tip if it exists, else the repo's current HEAD (honest
-  # ancestry — see mechanism step 1 in the header).
+  # PARENT: the branch's own tip if it exists (honest ancestry — --base is IGNORED in
+  # this case, see mechanism step 1 in the header); else --base if given, resolved and
+  # validated here (abort loud, distinct rc, if it doesn't resolve); else the repo's
+  # current HEAD (the default, unchanged).
   local PARENT BRANCH_EXISTED=0
   if PARENT="$(git -C "$REPO" rev-parse -q --verify "refs/heads/$BRANCH" 2>/dev/null)"; then
     BRANCH_EXISTED=1
+  elif [[ -n "$BASE" ]]; then
+    PARENT="$(_cp_resolve_base "$REPO" "$BASE")" \
+      || { echo "commit-paths.sh: --base '$BASE' does not resolve in $REPO" >&2; return 4; }
   else
     PARENT="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" \
       || { echo "commit-paths.sh: cannot resolve HEAD in $REPO" >&2; return 2; }
@@ -286,10 +324,18 @@ commit_paths() {
 
     # CAS lost the race to a concurrent writer on this same branch. Re-resolve the tip
     # and rebuild exactly once against it; a second CAS loss fails loud rather than
-    # retrying forever.
+    # retrying forever. Same PARENT-selection rule as the initial attempt: the branch's
+    # own tip if it exists now, else --base if given (validated again — the branch
+    # having vanished mid-retry is the one path where this is resolved for the first
+    # time), else HEAD.
     echo "commit-paths.sh: CAS on refs/heads/$BRANCH lost the race — retrying once" >&2
-    newparent="$(git -C "$REPO" rev-parse -q --verify "refs/heads/$BRANCH" 2>/dev/null)" \
-      || newparent="$(git -C "$REPO" rev-parse HEAD)"
+    if ! newparent="$(git -C "$REPO" rev-parse -q --verify "refs/heads/$BRANCH" 2>/dev/null)"; then
+      if [[ -n "$BASE" ]]; then
+        newparent="$(_cp_resolve_base "$REPO" "$BASE")" || exit 4
+      else
+        newparent="$(git -C "$REPO" rev-parse HEAD)"
+      fi
+    fi
     result="$(_cp_attempt "$newparent")"; rc=$?
     (( rc != 0 )) && exit "$rc"
     [[ "$result" == "NOOP" ]] && exit 0

@@ -114,7 +114,9 @@ EOF
 
 ### Step 6 — Commit the session's changes (optional)
 
-If the project folder is inside a git repo, land the session's work on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` — never push directly to `main`. Each tab commits to a **distinct per-session branch** (keyed by a short, ref-safe form of `$SID`), so concurrent tabs never race on the same ref or index. The helper does all of this: it **stages ONLY the project folder (`$REL/`)**, skips the commit when there is nothing to commit (no empty commit), and — because the working tree is shared across tabs — **captures the branch you were on and restores it afterward** so another tab isn't left checked out on this tab's pm branch. If the project is not in a git repo, it prints a notice and skips. `$SID` and `$NAME` were resolved in Step 1.
+If the project folder is inside a git repo, land the session's work on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` — never push directly to `main`. This is a **frozen-HEAD commit** (`lib/commit-paths.sh`, sourced by `lib/session-commit.sh`): the shared repo's real HEAD, index, and working tree are never touched. There is no checkout of the session branch, no restore step afterward, and therefore no "which branch did the tree end up on" hazard — the commit is assembled entirely against a scratch git index, so two tabs committing at the same moment never interleave a checkout/add/commit sequence in the one shared tree. If the commit-message hook rejects the message elsewhere in this repo, that hook never runs here — this plumbing path lints the message itself (single line, ≤50 chars, conventional-commit shape) and aborts rather than writing a non-conforming commit; never bypass hooks (never `--no-verify`).
+
+The helper stages the allowlist — everything dirty (modified + untracked) under the project folder — **minus the churn exclusion set** (`CALENDAR.*`, `meetings.jsonl`, `.pm/`, `LAST-SESSION.md`): those files are written continuously by every pane on the project and are committed once daily by the **EOD sweep** (`pa-eod-wrap`) across every registered project root, never by this per-session step. Committing them here would mean N session branches each carrying the same `CALENDAR.md`/`meetings.jsonl` change, colliding at EOD reconciliation. It skips the commit when the (non-churn) allowlist is empty (no empty commit). If the project is not in a git repo, it prints a notice and skips. `$SID` and `$NAME` were resolved in Step 1.
 
 **This local commit runs in BOTH modes.** What happens *after* it depends on the per-project `auto_ship` flag in `.pm/config.json` (default `false`).
 
@@ -123,21 +125,35 @@ AUTO_SHIP=$(jq -r '.auto_ship // false' "$ROOT/.pm/config.json")
 BRANCH=$("{{framework_root}}/lib/session-commit.sh" --root "$ROOT" --session "$SID" --name "$NAME")
 ```
 
-Only paths under `$ROOT` are ever staged; unrelated dirty files outside the project folder stay unstaged and travel with the checkout (no stashing). If the commit-message hook rejects the message, fix the message — never bypass hooks (never `--no-verify`).
+Only paths under `$ROOT` (minus the churn exclusion set above) are ever staged; everything else — including unrelated dirty files outside the project folder — is left exactly as it was, since nothing here ever runs a checkout, reset, stash, or clean against the repo.
 
 #### Mode A — `auto_ship=false` (default): stop after the local commit
 
-The default. Leave the per-session branch local and **do not** push or open a PR. Because each tab produces its own `chore/<day>-<slug>-pm-<shortsid>` branch, reconcile them at end of day into a single branch (or one PR per day) and delete the merged session branches. This is **advisory** — in this mode `/pm-end` never auto-merges or auto-pushes (matches the "never push to `main`" rule and the "never bypass hooks" note above).
+The default. Leave the per-session branch local and **do not** push or open a PR from this step. Because each tab produces its own `chore/<day>-<slug>-pm-<shortsid>` branch, reconcile them at end of day using only ref-safe commands that never switch, reset, or otherwise touch the shared tree's checked-out branch:
 
 ```bash
 DAY=$(date +%Y-%m-%d); SLUG=$(printf '%s' "$NAME" | tr '[:upper:] ' '[:lower:]-')
 REPO=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)
 # List today's per-session pm branches:
 git -C "$REPO" branch --list "chore/$DAY-$SLUG-pm-*"
-# Merge them onto a single day branch, then delete the merged ones:
-git -C "$REPO" checkout -b "chore/$DAY-$SLUG-pm" 2>/dev/null || git -C "$REPO" checkout "chore/$DAY-$SLUG-pm"
-#   ... git merge each session branch ...   (their commit messages already conform)
-#   ... then: git branch -d chore/$DAY-$SLUG-pm-<shortsid>   (the branch-cleanup skill can help)
+# Push each session branch and ship it through its own PR (one per branch, or open one
+# day-bundle PR against a single collector branch — either way, only REFS move):
+git -C "$REPO" push -u origin "chore/$DAY-$SLUG-pm-<shortsid>"
+( cd "$REPO" && gh pr create --base main --head "chore/$DAY-$SLUG-pm-<shortsid>" \
+    --title "docs(pm): $SLUG session $DAY" --body "Automated /pm-end session ship." )
+( cd "$REPO" && gh pr merge "chore/$DAY-$SLUG-pm-<shortsid>" --merge --delete-branch )
+# Update the origin/main REMOTE-TRACKING ref only — `git fetch origin main` never writes
+# to a LOCAL branch, so it is safe even when `main` is the shared tree's checked-out
+# branch (an explicit `origin main:main` refspec is NOT safe here — git refuses to write
+# a local branch that is checked out in this or any linked worktree, which `main` usually
+# is in the shared tree; that failure mode is exactly what this whole change eliminates
+# elsewhere, so don't reintroduce it here):
+git -C "$REPO" fetch origin main
+# Verify by ancestry against the remote-tracking ref, never by PR state:
+git -C "$REPO" merge-base --is-ancestor <session-commit-sha> origin/main && echo "landed"
+# The shared tree's own LOCAL main still drifts behind origin/main until a separate,
+# deliberate quiet-hours fast-forward (`git fetch && git merge --ff-only`, run only when
+# the tree is clean and no pane is mid-session) — out of scope for this step by design.
 ```
 
 #### Mode B — `auto_ship=true`: auto-ship the session branch via a PR
@@ -205,7 +221,7 @@ Print this only when the project has a `session_color` configured; skip it other
 - **LAST-SESSION.md is per-session blocks** — write only *your* session's block via `handoff-write.sh` (it replaces your block, preserves others). Never overwrite the whole file: a concurrent session on the same project may own another block.
 - **No JOURNAL.md** — do not create one.
 - **Every tool is guarded by `pm_tool_defined <name>`** — never fabricate `tool:logs` or `tool:todo` activity for an undefined tool; print "tool:<name> not defined — skipping <capability>".
-- **Commit (when in a repo) is scoped to the project folder** — stage only paths under `$ROOT`, on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` (never the shared per-day branch); the shared working tree is restored to the branch you were on afterward; never push to `main`, never stage files outside the project folder. Reconcile the per-session branches at end of day (see Step 6).
+- **Commit (when in a repo) is scoped to the project folder, minus the churn exclusion set** — stage only paths under `$ROOT` (excluding `CALENDAR.*`, `meetings.jsonl`, `.pm/`, `LAST-SESSION.md` — those are the EOD sweep's), on **this session's own branch** `chore/<day>-<slug>-pm-<shortsid>` (never the shared per-day branch). It is a **frozen-HEAD commit** (`lib/commit-paths.sh`): the shared repo's real HEAD, index, and working tree are never touched, so there is nothing to "restore" and no branch the tree is ever left on other than the one it was already on. Never push to `main`, never stage files outside the project folder. Reconcile the per-session branches at end of day (see Step 6).
 - **`auto_ship` (per-project, `.pm/config.json`, default `false`)** — when `false`, the session branch stays local and you reconcile at EOD (Mode A). When `true`, `/pm-end` auto-ships the branch via the PR workflow (push branch → `gh pr create` → `gh pr merge --merge --delete-branch`), only when a commit was actually made and a remote exists — never a direct push to `main`, never `--no-verify` (Mode B).
 
 ## Signal Keywords

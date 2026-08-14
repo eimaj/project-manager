@@ -65,8 +65,8 @@ fi
 # ── Step 2: install the framework lib (idempotent copy) ─────────────────────────
 info "Installing framework lib into ${FRAMEWORK_ROOT}/lib/..."
 run mkdir -p "${FRAMEWORK_ROOT}/lib"
-for f in session.sh with-lock.sh scaffold.sh handoff-write.sh config.sh session-commit.sh \
-         prune-markers.sh active-panes.sh herdr-tabs.sh herdr-goto.sh; do
+for f in session.sh with-lock.sh scaffold.sh handoff-write.sh config.sh commit-paths.sh \
+         session-commit.sh prune-markers.sh active-panes.sh herdr-tabs.sh herdr-goto.sh; do
   run install -m 0755 "${SCRIPT_DIR}/lib/${f}" "${FRAMEWORK_ROOT}/lib/${f}"
   say "installed: ${FRAMEWORK_ROOT}/lib/${f}"
 done

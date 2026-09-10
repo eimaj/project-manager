@@ -16,13 +16,20 @@
 # commit per repo on a dated branch.
 #
 # Usage:
-#   churn-sweep.sh [--dry-run] [--ship] [--root <path>]... [--registry <file>]
+#   churn-sweep.sh [--dry-run] [--ship] [--root <path>] [--registry <file>]
 #
 #   --dry-run      list what would be committed, write nothing (default is to commit)
 #   --ship         after committing, push the branch and open+merge a PR via `gh`
 #                  (never pushes a base branch directly; skipped if `gh` is absent)
-#   --root <path>  sweep only this project root (repeatable); default = every registry entry
+#   --root <path>  the project to sweep; default = this session's active project (marker)
 #   --registry     override the registry path (default $PM_FRAMEWORK_ROOT/registry.jsonl)
+#
+# ONE PROJECT PER RUN, deliberately. Several projects commonly live inside ONE repo
+# (`~/Code/logs` holds every pm project), and their churn files are written by different
+# panes at different times. A repo-wide sweep would bundle a project whose session is
+# mid-flight together with one that is settled, into a single commit that cannot be
+# reverted for one and kept for the other. So the target is a PROJECT, the branch is named
+# per project, and sweeping two projects means two runs — each landing independently.
 #
 # Safety properties, all inherited deliberately:
 #   - Commits are built with lib/commit-paths.sh (frozen-HEAD): the repo's real HEAD,
@@ -45,13 +52,14 @@ REGISTRY="$FRAMEWORK_ROOT/registry.jsonl"
 COMMIT_PATHS="$FRAMEWORK_ROOT/lib/commit-paths.sh"
 DRY_RUN=0
 SHIP=0
-declare -a ONLY_ROOTS=()
+TARGET_ROOT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)  DRY_RUN=1; shift ;;
     --ship)     SHIP=1; shift ;;
-    --root)     ONLY_ROOTS+=("${2:?--root needs a path}"); shift 2 ;;
+    --root)     [[ -n "$TARGET_ROOT" ]] && { echo "churn-sweep: --root given twice; one project per run." >&2; exit 2; }
+                TARGET_ROOT="${2:?--root needs a path}"; shift 2 ;;
     --registry) REGISTRY="${2:?--registry needs a path}"; shift 2 ;;
     -h|--help)  sed -n '2,42p' "$0"; exit 0 ;;
     *)          echo "churn-sweep: unknown arg '$1'" >&2; exit 2 ;;
@@ -73,15 +81,25 @@ _is_churn() {
   return 1
 }
 
-# Collect the roots to sweep.
-declare -a ROOTS=()
-if [[ ${#ONLY_ROOTS[@]} -gt 0 ]]; then
-  ROOTS=("${ONLY_ROOTS[@]}")
-else
-  while IFS= read -r r; do [[ -n "$r" ]] && ROOTS+=("$r"); done \
-    < <(jq -r '.root // empty' "$REGISTRY" | awk '!seen[$0]++')
+# Resolve THE ONE project to sweep. Explicit --root wins; otherwise fall back to this
+# session's active project (the pm-start marker), which is what a bare invocation during a
+# session almost always means. Never fan out across the registry: see the ONE PROJECT PER
+# RUN note above. With no target and no marker, list the registry and stop rather than
+# guessing which project the user meant.
+if [[ -z "$TARGET_ROOT" ]]; then
+  if [[ -r "$FRAMEWORK_ROOT/lib/session.sh" ]]; then
+    . "$FRAMEWORK_ROOT/lib/session.sh"
+    MARKER="$FRAMEWORK_ROOT/sessions/$(pm_session_id 2>/dev/null)"
+    [[ -r "$MARKER" ]] && TARGET_ROOT="$(cat "$MARKER" 2>/dev/null)"
+  fi
+  [[ -n "$TARGET_ROOT" ]] && echo "churn-sweep: no --root given — using this session's project: $TARGET_ROOT"
 fi
-[[ ${#ROOTS[@]} -gt 0 ]] || { echo "churn-sweep: no project roots to sweep."; exit 0; }
+if [[ -z "$TARGET_ROOT" ]]; then
+  echo "churn-sweep: no --root given and no active session project. Pick one:" >&2
+  jq -r '.root // empty' "$REGISTRY" | awk '!seen[$0]++' | sed 's#^#  --root #' >&2
+  exit 2
+fi
+ROOTS=("$TARGET_ROOT")
 
 # Group dirty churn paths by containing repo. macOS ships bash 3.2 (no associative arrays,
 # no mapfile) and every other lib here targets it, so grouping goes through a temp file of
@@ -123,6 +141,15 @@ done
 DAY="$(date +%F)"
 RC=0
 
+# Project slug — names the branch and the commit, so two projects sharing one repo never
+# land on the same branch and each run is revertable on its own.
+PROJ="$(basename "$TARGET_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')"
+PROJ="${PROJ:-project}"
+# commit-paths.sh lints the message at <=50 chars and ABORTS (exit 10) rather than writing
+# a non-conforming commit. "chore(pm): sweep " + PROJ + " churn files" is 29 + len(PROJ),
+# so a long project name would fail the whole sweep on a message technicality — clamp it.
+PROJ="${PROJ:0:21}"; PROJ="${PROJ%-}"
+
 while IFS= read -r REPO; do
   [[ -n "$REPO" ]] || continue
   FILES=()
@@ -131,7 +158,8 @@ while IFS= read -r REPO; do
   done < <(awk -F'\t' -v r="$REPO" '$1==r{print $2}' "$PAIRS" | sort -u)
   [[ ${#FILES[@]} -gt 0 ]] || continue
 
-  echo "repo: $REPO"
+  echo "project: $TARGET_ROOT"
+  echo "repo:    $REPO"
   printf '  %s\n' "${FILES[@]}"
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -141,7 +169,7 @@ while IFS= read -r REPO; do
 
   BASE="$(git -C "$REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
   BASE="${BASE:-main}"
-  BRANCH="chore/$DAY-pm-churn-sweep"
+  BRANCH="chore/$DAY-pm-churn-$PROJ"
 
   # Refuse to build onto the branch the shared tree currently has checked out — that is
   # commit-paths.sh's exit 3, but catching it here gives a clearer message.
@@ -150,13 +178,21 @@ while IFS= read -r REPO; do
     echo "  ERROR: $BRANCH is checked out in this worktree — skipping." >&2; RC=1; continue
   fi
 
+  # Refresh the remote-tracking ref BEFORE resolving the parent. `origin/<base>` is only
+  # as current as the last fetch, and a shared tree's local refs go stale within minutes —
+  # parenting off a stale one produces a commit whose content is already upstream (an
+  # empty-content commit on a dated branch). A fetch of one ref touches no working tree,
+  # no index and no local branch, so it is safe here; failure (offline) is non-fatal and
+  # simply falls through to whatever ref is already known.
+  git -C "$REPO" fetch -q origin "$BASE" >/dev/null 2>&1 || true
+
   # Prefer an up-to-date parent; fall back to local base, then HEAD, if origin is unreachable.
   BASE_REF="origin/$BASE"
   git -C "$REPO" rev-parse -q --verify "$BASE_REF" >/dev/null 2>&1 || BASE_REF="$BASE"
   git -C "$REPO" rev-parse -q --verify "$BASE_REF" >/dev/null 2>&1 || BASE_REF=""
 
   declare -a CP_ARGS=(--repo "$REPO" --branch "$BRANCH"
-                      --message "chore(pm): sweep project churn files")
+                      --message "chore(pm): sweep $PROJ churn files")
   [[ -n "$BASE_REF" ]] && CP_ARGS+=(--base "$BASE_REF")
   # Loss guards on the two genuinely append-only files.
   for f in "${FILES[@]}"; do
@@ -195,8 +231,8 @@ while IFS= read -r REPO; do
     RC=1; continue
   fi
   URL="$(gh pr create --repo "$NWO" --base "$BASE" --head "$BRANCH" \
-          --title "chore(pm): sweep project churn files" \
-          --body "Daily PM churn sweep: commits CALENDAR.*, meetings.jsonl, .pm/ and LAST-SESSION.md across registered project roots. These are excluded from /pm-end's per-session commit by design; this sweep owns them. Built with lib/commit-paths.sh (frozen-HEAD) — the shared worktree was never touched." \
+          --title "chore(pm): sweep $PROJ churn files" \
+          --body "PM churn sweep for \`$TARGET_ROOT\`: commits that project's \`CALENDAR.*\`, \`meetings.jsonl\`, \`.pm/\` and \`LAST-SESSION.md\`. These are excluded from /pm-end's per-session commit by design; this sweep owns them. Scoped to ONE project so a repo holding several does not bundle a mid-flight project with a settled one. Built with lib/commit-paths.sh (frozen-HEAD) — the shared worktree was never touched." \
           2>/dev/null)" || echo "  pr create failed (a PR may already exist for $BRANCH)" >&2
   [[ -n "${URL:-}" ]] && echo "  PR: $URL"
   if gh pr merge "$BRANCH" --repo "$NWO" --squash --delete-branch >/dev/null 2>&1; then

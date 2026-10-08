@@ -23,7 +23,7 @@
 #   PM_NAME          | --name           project name (required)
 #   PM_ROOT          | --root           absolute folder path = project identity (required)
 #                    | --tool-ref       <name>=<value> per-tool project ref (repeatable, optional)
-#   PM_BRIEFS_DIR    | --briefs-dir     abs dir for /orchestrate-brief output (optional; default <root>/briefs)
+#   PM_BRIEFS_DIR    | --briefs-dir     abs dir for /orchestrate-spec output (optional; default <root>/briefs)
 #   PM_TEAM          | --team           comma-separated team members (optional)
 #   PM_KEYWORDS      | --keywords       comma-separated keywords/aliases (optional)
 #   PM_SESSION_COLOR | --session-color  Claude Code session color (optional)
@@ -34,7 +34,7 @@
 #   - Never clobbers an existing CONTEXT.md / CALENDAR.md / meetings.jsonl / reports/ / briefs/ (re-init safe).
 #   - reports/ is the project-local report sink (this project's own artifacts), distinct from a
 #     tool's GLOBAL `root` in ~/.config/pm/config.json (the shared, cross-project output sink).
-#   - briefs/ (config: briefs_dir, default <root>/briefs) is the project-local /orchestrate-brief
+#   - briefs/ (config: briefs_dir, default <root>/briefs) is the project-local /orchestrate-spec
 #     sink, distinct from the orchestrate global {artifact_root}/runs/<session_id>/ sink.
 #   - config.json is merged, not replaced: managed fields update from inputs while any
 #     unknown/extra fields in an existing config (and its `created`) are preserved.
@@ -332,8 +332,8 @@ else
   echo "wrote   $REPORTS_DIR/"
 fi
 
-# ---- seed briefs/ (project-local /orchestrate-brief sink; never clobber) ------
-# Each project keeps its OWN /orchestrate-brief output under briefs_dir (default <root>/briefs) —
+# ---- seed briefs/ (project-local /orchestrate-spec sink; never clobber) ------
+# Each project keeps its OWN /orchestrate-spec output under briefs_dir (default <root>/briefs) —
 # distinct from the orchestrate GLOBAL {artifact_root}/runs/<session_id>/ sink. Read the resolved
 # path from the config just written (so a custom/preserved briefs_dir is honored). mkdir -p is
 # idempotent: an existing briefs dir (and its contents) is left untouched.

@@ -48,25 +48,12 @@ time, adjust the `tool:<name>` references below to match.
 
 ## Steps
 
-### Step 0 — Invoke ADHD-shaped output style, if installed (optional, first)
+### Step 0 — ADHD-shaped output style (already in context; no call)
 
-Before anything else in this skill — before the session marker, before LIVE sync, before the
-briefing — check whether the optional `i-have-adhd` output-style skill is installed:
-
-```bash
-ADHD_SKILL="$HOME/.claude/skills/i-have-adhd/SKILL.md"
-[ -f "$ADHD_SKILL" ] && echo "pm: i-have-adhd found — invoking ADHD-shaped output style." || true
-```
-
-- **If found:** call the `Skill` tool with `skill: "i-have-adhd"` exactly once, before Step 1.
-  It carries `disable-model-invocation: true`, so it never fires on its own from a description
-  match — this explicit call is the only way it activates. The output shape it sets persists for
-  the rest of the session, not just this response.
-- **If not installed:** proceed straight to Step 1 with no error and no printed note. Like every
-  named tool this skill guards with `pm_tool_defined <name>`, an absent optional skill degrades
-  gracefully instead of erroring; unlike those, it stays silent on the miss rather than printing a
-  skip note, since most installs will not have it. The `|| true` keeps the miss off the step's
-  exit status, so a silent skip never reads as a failed step.
+The `i-have-adhd` output rules are already in context from the always-on SessionStart hook.
+Apply them to the briefing and every response: do not call the `Skill` tool for it and do not
+read the skill file (the skill is `disable-model-invocation: true`, so the call is rejected).
+If the rules are not in context, proceed to Step 1 with no error and no printed note.
 
 ### Step 1 — Resolve the project and write the session marker
 

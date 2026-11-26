@@ -65,7 +65,7 @@ capability and says so in the briefing rather than failing or fabricating data. 
 
 | Skill | When | What it does | Network |
 |---|---|---|---|
-| **`pm-init`** | once per project | scaffolds `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`; upserts the registry (deduped by root). Flows straight into `pm-start`. | none |
+| **`pm-init`** | once per project | scaffolds `.pm/config.json`, `CONTEXT.md`, `CALENDAR.md`, `meetings.jsonl`, `reports/`, `briefs/`; upserts the registry (deduped by root). Flows straight into `pm-start`. | none |
 | **`pm-start`** | once at session open | writes the per-session marker, **live sync** (meeting catch-up + inbox scan + task due dates, each gated on the relevant tool being defined), prints the briefing + a paste-ready `/rename`+`/color` block | live |
 | **`pm-status`** | anytime, rerunnable | hygiene guard first, then a briefing from cached files only | none |
 | **`pm-end`** | wrapping up | hygiene guard, session summary, per-session `LAST-SESSION.md` handoff block, optional per-session git commit | none |
@@ -152,6 +152,11 @@ pm/
     commit-paths.sh          #   frozen-HEAD commit primitive (scratch-index, no checkout)
     session-commit.sh        #   per-session pm-end commit branch, via commit-paths.sh
     config.sh                #   read the personal config, expose generic tool accessors
+    churn-sweep.sh           #   commit the churn files pm-end excludes, per project
+    active-panes.sh          #   list the other live sessions open on a project
+    prune-markers.sh         #   prune stale per-session markers
+    herdr-tabs.sh            #   read-only catalog of herdr tabs/panes
+    herdr-goto.sh            #   jump to a herdr tab/pane by id or fuzzy name
   templates/pm-{init,start,status,end}/SKILL.md   # placeholder skills, RENDERED by pm-generate
   skills/pm-generate/        # the generator skill itself (symlinked by install.sh)
   docs/                      # ARCHITECTURE.md, SLOTS.md
@@ -179,7 +184,7 @@ pm/
 
 | File | Written by | Purpose |
 |---|---|---|
-| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`tool_refs`, team, keywords, `collaborators`, `auto_ship`, `session_color`) |
+| `.pm/config.json` | `pm-init` (always rewritten) | canonical per-project config (`tool_refs`, team, keywords, `collaborators`, `auto_ship`, `session_color`, `briefs_dir`) |
 | `CONTEXT.md` | `pm-init` seed (never clobbered) | stable hand-edited overview |
 | `CALENDAR.md` | `pm-init` seed; `pm-start` regen | Synced due dates; manual entries below `<!-- PM:MANUAL -->` preserved |
 | `meetings.jsonl` | `pm-start` appends | `{meeting_id, date, title, path}` pointers — never transcript copies |
